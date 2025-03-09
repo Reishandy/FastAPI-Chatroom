@@ -38,7 +38,7 @@ def initialize() -> None:
         getenv("VERIFICATION_CODE_EXPIRATION_MINUTES", VERIFICATION_CODE_EXPIRATION_MINUTES))
 
     # Set the database connection
-    mongo_uri: str = None
+    mongo_uri: str = getenv("MONGODB_URI")
     mongo_username: str = getenv("MONGODB_USERNAME")
     mongo_password: str = getenv("MONGODB_PASSWORD")
     mongo_database: str = getenv("MONGODB_DATABASE")
