@@ -1,13 +1,14 @@
 from os import getenv
 from re import match
-from secrets import choice
-from datetime import datetime, timedelta
+from secrets import choice, token_urlsafe
+from datetime import datetime, timedelta, UTC
 
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from pymongo.errors import OperationFailure
+from jwt import encode, decode, ExpiredSignatureError, InvalidTokenError
 
 from app.email import send_verification_email
 
@@ -15,6 +16,7 @@ from app.email import send_verification_email
 #      ┃                     GLOBAL VARIABLES                     ┃
 #      ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
+SECRET_KEY: str
 DB: AsyncIOMotorDatabase
 REFRESH_TOKEN_EXPIRATION_DAYS: int = 30
 ACCESS_TOKEN_EXPIRATION_DAYS: int = 1
@@ -29,7 +31,12 @@ def initialize() -> None:
     """
     Initialize the global variables
     """
-    global DB, REFRESH_TOKEN_EXPIRATION_DAYS, ACCESS_TOKEN_EXPIRATION_DAYS, VERIFICATION_CODE_EXPIRATION_MINUTES
+    global SECRET_KEY, DB, REFRESH_TOKEN_EXPIRATION_DAYS, ACCESS_TOKEN_EXPIRATION_DAYS, VERIFICATION_CODE_EXPIRATION_MINUTES
+
+    # Set the secret key
+    SECRET_KEY = getenv("SECRET_KEY")
+    if not SECRET_KEY:
+        raise ValueError("SECRET_KEY is not set")
 
     # Set the expiration times if they are set in the environment variables
     REFRESH_TOKEN_EXPIRATION_DAYS = int(getenv("REFRESH_TOKEN_EXPIRATION_DAYS", REFRESH_TOKEN_EXPIRATION_DAYS))
@@ -64,6 +71,8 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     existing_indexes = await db.users.index_information()
     if "email_1" not in existing_indexes:
         await db.users.create_index("email", unique=True)
+    if "refresh_token.token_1" not in existing_indexes:
+        await db.users.create_index("refresh_token.token", unique=True)
 
     # Check and create index for verification_queue collection
     existing_indexes = await db.verification_queue.index_information()
@@ -98,7 +107,7 @@ async def add_user_to_verification_queue(email: str, password: str, username: st
                 "hashed_password": hash_password(password),
                 "username": username,
                 "verification_code": verification_code,
-                "timestamp": datetime.now()
+                "timestamp": datetime.now(UTC)
             },
             upsert=True
         )
@@ -133,7 +142,7 @@ async def verify_email(email: str, code: str) -> None:
 
         if code != stored_verification_code:
             raise ValueError("Invalid verification code")
-        if timestamp < datetime.now() - timedelta(minutes=VERIFICATION_CODE_EXPIRATION_MINUTES):
+        if timestamp < datetime.now(UTC) - timedelta(minutes=VERIFICATION_CODE_EXPIRATION_MINUTES):
             raise ValueError("Verification code expired")
 
         # Move the user to the users collection
@@ -141,12 +150,99 @@ async def verify_email(email: str, code: str) -> None:
             "email": user["email"],
             "hashed_password": user["hashed_password"],
             "username": user["username"],
-            "created_at": datetime.now()
+            "created_at": datetime.now(UTC)
         })
 
         # Remove the user from the verification queue
         await DB.verification_queue.delete_one({"email": email})
     except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def login(email: str, password: str) -> dict[str, str]:
+    """
+    Login the user and return the access token and refresh token.
+
+    :param email: The email of the user.
+    :param password: The password of the user.
+    :return: The refresh token and access token as a dictionary.
+    """
+    if not validate_email(email):
+        raise ValueError("Invalid email")
+
+    try:
+        # Get the user from the users collection
+        user = await DB.users.find_one({"email": email})
+        if not user:
+            raise ValueError("User not found")
+
+        # Verify the password
+        if not verify_password(password, user["hashed_password"]):
+            raise ValueError("Invalid password")
+
+        # Create and append the refresh token to the user
+        refresh_token = create_refresh_token()
+        await DB.users.update_one(
+            {"email": email},
+            {"$set": {"refresh_token": {
+                "token": refresh_token,
+                "issued_at": datetime.now(UTC),
+                "expiration": datetime.now(UTC) + timedelta(days=REFRESH_TOKEN_EXPIRATION_DAYS)
+            }}},
+            upsert=True
+        )
+
+        # Create the first access token
+        access_token = create_access_token(email)
+
+        return {"refresh_token": refresh_token, "access_token": access_token, "type": "Bearer"}
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def issue_new_access_token(refresh_token: str) -> str:
+    """
+    Issue a new access token using the refresh token.
+
+    :param refresh_token: The refresh token to use.
+    :return: The new access token.
+    """
+    try:
+        # Get the user from the users collection
+        user = await DB.users.find_one({"refresh_token.token": refresh_token})
+        if not user:
+            raise ValueError("Refresh token not found")
+
+        # Ensure expiration time has timezone info
+        expiration = user["refresh_token"]["expiration"]
+        if expiration.tzinfo is None:
+            expiration = expiration.replace(tzinfo=UTC)
+
+        # Check if the refresh token is expired
+        if expiration < datetime.now(UTC):
+            raise ValueError("Refresh token expired")
+
+        # Create new access token
+        return create_access_token(user["email"])
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def verify_access_token(token: str) -> str:
+    """
+    Verify the access token and return the email of the user.
+
+    :param token: The access token to verify.
+    :return: The email of the user.
+    """
+    try:
+        decoded = decode(token, SECRET_KEY, algorithms=["HS256"])
+        return decoded["sub"]
+    except ExpiredSignatureError:
+        raise ValueError("Token expired")
+    except InvalidTokenError:
+        raise ValueError("Invalid token")
+    except Exception as e:
         raise RuntimeError(str(e))
 
 
@@ -200,3 +296,25 @@ def verify_password(password: str, hashed_password: str) -> bool:
         return False
     except InvalidHashError:
         return False
+
+
+def create_refresh_token() -> str:
+    """
+    Create a secure refresh token using secrets' token_urlsafe function.
+
+    :return: The refresh token as a string.
+    """
+    return token_urlsafe(128)
+
+
+def create_access_token(email: str) -> str:
+    """
+    Create a JWT access token using the email as the subject.
+
+    :param email: The email of the user.
+    :return: The access token as a string.
+    """
+    return encode(
+        {"sub": email, "exp": datetime.now(UTC) + timedelta(days=ACCESS_TOKEN_EXPIRATION_DAYS),
+         "iat": datetime.now(UTC)}, SECRET_KEY, algorithm="HS256"
+    )
