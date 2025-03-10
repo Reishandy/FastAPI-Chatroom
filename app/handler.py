@@ -1,16 +1,16 @@
+from datetime import datetime, timedelta, UTC
 from os import getenv
 from re import match
 from secrets import choice, token_urlsafe
-from datetime import datetime, timedelta, UTC
-from typing import Any, Coroutine
+from typing import Any
 from uuid import uuid4
 
-from dotenv import load_dotenv
-from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
-from pymongo.errors import OperationFailure
+from dotenv import load_dotenv
 from jwt import encode, decode, ExpiredSignatureError, InvalidTokenError
+from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
+from pymongo.errors import OperationFailure
 
 from app.email import send_verification_email
 
@@ -23,7 +23,7 @@ DB: AsyncIOMotorDatabase
 REFRESH_TOKEN_EXPIRATION_DAYS: int = 30
 ACCESS_TOKEN_EXPIRATION_DAYS: int = 1
 VERIFICATION_CODE_EXPIRATION_MINUTES: int = 10
-PH: PasswordHasher = PasswordHasher()
+PASSWORD_HASHER: PasswordHasher = PasswordHasher()
 
 # Load environment variables
 load_dotenv()
@@ -70,7 +70,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     :param db: The database instance.
     """
     # Check and create index for users collection
-    existing_indexes = await db.users.index_information()
+    existing_indexes: dict[str, dict[str, Any]] = await db.users.index_information()
     if "user_id_1" not in existing_indexes:
         await db.users.create_index("user_id", unique=True)
     if "refresh_token.token_1" not in existing_indexes:
@@ -86,9 +86,9 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     if "room_id_1" not in existing_indexes:
         await db.room.create_index("room_id", unique=True)
     if "owner_1" not in existing_indexes:
-        await db.chatrooms.create_index("owner")  # Non-unique index for queries
+        await db.room.create_index("owner")  # Non-unique index for queries
     if "users_1" not in existing_indexes:
-        await db.chatrooms.create_index("users")  # Non-unique index for queries
+        await db.room.create_index("users")  # Non-unique index for queries
 
 
 #      ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -108,11 +108,20 @@ async def add_user_to_verification_queue(email: str, password: str, username: st
     if not validate_email(email):
         raise ValueError("Invalid email")
 
+    if len(password) < 8 or len(password) > 32:
+        raise ValueError("Password must be between 8 and 32 characters")
+
+    if len(username) < 3 or len(username) > 32:
+        raise ValueError("Username must be between 3 and 32 characters")
+
+    if not username.isalnum():
+        raise ValueError("Username must be alphanumeric")
+
     verification_code: str = create_verification_code()
 
     try:
         # Check if the email is already in the users collection / registered
-        user = await DB.users.find_one({"email": email})
+        user: dict[str, Any] = await DB.users.find_one({"email": email})
         if user:
             raise ValueError("User already exists")
 
@@ -148,14 +157,14 @@ async def verify_email(email: str, code: str) -> None:
 
     try:
         # Get the user from the verification queue
-        user = await DB.verification_queue.find_one({"email": email})
+        user: dict[str, Any] = await DB.verification_queue.find_one({"email": email})
         if not user:
             raise ValueError("Verification not found")
 
         # Perform verification
         # Ensure timestamp has timezone info
-        stored_verification_code = user["verification_code"]
-        timestamp = user["timestamp"]
+        stored_verification_code: str = user["verification_code"]
+        timestamp: datetime = user["timestamp"]
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=UTC)
 
@@ -192,7 +201,7 @@ async def login(email: str, password: str) -> tuple[dict[str, str], dict[str, st
 
     try:
         # Get the user from the users collection
-        user = await DB.users.find_one({"email": email})
+        user: dict[str, Any] = await DB.users.find_one({"email": email})
         if not user:
             raise ValueError("User not found")
 
@@ -201,7 +210,7 @@ async def login(email: str, password: str) -> tuple[dict[str, str], dict[str, st
             raise ValueError("Invalid password")
 
         # Create and append the refresh token to the user
-        refresh_token = create_refresh_token()
+        refresh_token: str = create_refresh_token()
         await DB.users.update_one(
             {"email": email},
             {"$set": {"refresh_token": {
@@ -214,7 +223,7 @@ async def login(email: str, password: str) -> tuple[dict[str, str], dict[str, st
 
         # Create the first access token
         user_id: str = user["user_id"]
-        access_token = create_access_token(user_id)
+        access_token: str = create_access_token(user_id)
 
         return {"refresh_token": refresh_token, "access_token": access_token, "type": "Bearer"}, {"user_id": user_id}
     except OperationFailure as e:
@@ -230,12 +239,12 @@ async def issue_new_access_token(refresh_token: str) -> str:
     """
     try:
         # Get the user from the users collection
-        user = await DB.users.find_one({"refresh_token.token": refresh_token})
+        user: dict[str, Any] = await DB.users.find_one({"refresh_token.token": refresh_token})
         if not user:
             raise ValueError("Refresh token not found")
 
         # Ensure expiration time has timezone info
-        expiration = user["refresh_token"]["expiration"]
+        expiration: datetime = user["refresh_token"]["expiration"]
         if expiration.tzinfo is None:
             expiration = expiration.replace(tzinfo=UTC)
 
@@ -257,14 +266,12 @@ async def verify_access_token(token: str) -> str:
     :return: The user ID.
     """
     try:
-        decoded = decode(token, SECRET_KEY, algorithms=["HS256"])
+        decoded: dict[str, str] = decode(token, SECRET_KEY, algorithms=["HS256"])
         return decoded["sub"]
     except ExpiredSignatureError:
         raise ValueError("Token expired")
     except InvalidTokenError:
         raise ValueError("Invalid token")
-    except Exception as e:
-        raise RuntimeError(str(e))
 
 
 async def get_user(user_id: str) -> dict:
@@ -275,7 +282,7 @@ async def get_user(user_id: str) -> dict:
     :return: The user's email and username.
     """
     try:
-        user = await DB.users.find_one({"user_id": user_id}, {"email": 1, "username": 1})
+        user: dict[str, Any] = await DB.users.find_one({"user_id": user_id}, {"email": 1, "username": 1})
         if not user:
             raise ValueError("User not found")
         return user
@@ -284,37 +291,6 @@ async def get_user(user_id: str) -> dict:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ CHATROOM HANDLERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-async def create_room(room_id: str, name: str, description: str, owner: str, password: str | None = None) -> None:
-    """
-    Create a room with the given name and description.
-
-    :param room_id: Unique identifier of the room.
-    :param name: The name of the room.
-    :param description: The description of the room.
-    :param password: The password of the room.
-    :param owner: The user_id of the owner of the room.
-    """
-    try:
-        # Check if the room already exists
-        room = await DB.room.find_one({"room_id": room_id})
-        if room:
-            raise ValueError("Room ID taken")
-
-        await DB.room.insert_one({
-            "room_id": room_id,
-            "name": name,
-            "description": description,
-            "password": hash_password(password) if password else None,
-            "private": True if password else False,
-            "owner": owner,
-            "created_at": datetime.now(UTC),
-            "users": [owner]
-        })
-    except OperationFailure as e:
-        raise RuntimeError(str(e))
-
-
 async def get_room(room_id: str) -> dict[str, str]:
     """
     Get the room from the room collection.
@@ -323,7 +299,7 @@ async def get_room(room_id: str) -> dict[str, str]:
     :return: The room's name, description, owner, and users.
     """
     try:
-        room = await DB.room.find_one({"room_id": room_id}, {"password": 0, "_id": 0})
+        room: dict[str, Any] = await DB.room.find_one({"room_id": room_id}, {"password": 0, "_id": 0})
         if not room:
             raise ValueError("Room not found")
         return room
@@ -338,8 +314,104 @@ async def get_public_rooms() -> list[dict[str, str]]:
     :return: A list of public rooms with their name, description, and owner.
     """
     try:
-        rooms = await DB.room.find({"private": False}, {"password": 0, "_id": 0, "users": 0}).to_list(None)
+        rooms: list[dict[str, Any]] = await DB.room.find({"private": False},
+                                                         {"password": 0, "_id": 0, "users": 0}).to_list(None)
         return rooms
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def create_room(room_id: str, name: str, description: str, owner: str, password: str | None = None) -> None:
+    """
+    Create a room with the given name and description.
+
+    :param room_id: Unique identifier of the room.
+    :param name: The name of the room.
+    :param description: The description of the room.
+    :param password: The password of the room.
+    :param owner: The user_id of the owner of the room.
+    """
+    if len(room_id) < 3 or len(room_id) > 32:
+        raise ValueError("Room ID must be between 3 and 16 characters")
+
+    if not room_id.isalnum():
+        raise ValueError("Room ID must be alphanumeric")
+
+    if name == "":
+        raise ValueError("Name cannot be empty")
+
+    try:
+        # Check if the room already exists
+        room: dict[str, Any] = await DB.room.find_one({"room_id": room_id})
+        if room:
+            raise ValueError("Room ID taken")
+
+        await DB.room.insert_one({
+            "room_id": room_id,
+            "name": name,
+            "description": description,
+            "password": hash_password(password) if password else None,
+            "private": True if password else False,
+            "owner": owner,
+            "created_at": datetime.now(UTC).isoformat(),
+            "users": [owner]
+        })
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def update_room(room_id: str, name: str, description: str, user_id: str, password: str | None = None) -> None:
+    """
+    Update a room with the given name and description.
+
+    :param room_id: Unique identifier of the room.
+    :param name: The name of the room.
+    :param description: The description of the room.
+    :param password: The password of the room.
+    :param user_id: The user_id of the user that wants to update the room.
+    """
+    try:
+        # Check if the room already exists
+        room: dict[str, Any] = await DB.room.find_one({"room_id": room_id})
+        if not room:
+            raise ValueError("Room not found")
+
+        # Check if the user is the owner of the room
+        if room["owner"] != user_id:
+            raise ValueError("Forbidden")
+
+        await DB.room.update_one(
+            {"room_id": room_id},
+            {"$set": {
+                "name": name,
+                "description": description,
+                "password": hash_password(password) if password else None,
+                "private": True if password else False,
+                "updated_at": datetime.now(UTC)
+            }}
+        )
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def delete_room(room_id: str, user_id: str) -> None:
+    """
+    Delete a room with the given room_id.
+
+    :param room_id: Unique identifier of the room.
+    :param user_id: The user_id of the user that wants to delete the room.
+    """
+    try:
+        # Check if the room already exists
+        room: dict[str, Any] = await DB.room.find_one({"room_id": room_id})
+        if not room:
+            raise ValueError("Room not found")
+
+        # Check if the user is the owner of the room
+        if room["owner"] != user_id:
+            raise ValueError("Forbidden")
+
+        await DB.room.delete_one({"room_id": room_id})
     except OperationFailure as e:
         raise RuntimeError(str(e))
 
@@ -386,7 +458,7 @@ def hash_password(password: str) -> str:
     :param password: The password to hash.
     :return: The hashed password.
     """
-    return PH.hash(password)
+    return PASSWORD_HASHER.hash(password)
 
 
 def verify_password(password: str, hashed_password: str) -> bool:
@@ -398,7 +470,7 @@ def verify_password(password: str, hashed_password: str) -> bool:
     :return: True if the password matches the hashed password, False otherwise.
     """
     try:
-        return PH.verify(hashed_password, password)
+        return PASSWORD_HASHER.verify(hashed_password, password)
     except VerifyMismatchError:
         return False
     except InvalidHashError:

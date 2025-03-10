@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Coroutine
+from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Body, Header
 from fastapi.params import Depends
@@ -15,11 +15,8 @@ import app.handler as handler
 #  - change password
 #  - change username
 #  ------------
-#  - edit room
-#  - delete room
 #  - join room
 #  - leave room
-#  - invite user
 #  - kick user
 #  - ban user
 #  - unban user
@@ -54,11 +51,24 @@ class Room(BaseModel):
     description: str = Field(..., description="The description of the room", examples=["Room1 description"])
 
 
+class RoomWithoutID(BaseModel):
+    name: str = Field(..., description="The name of the room", examples=["Room1"])
+    description: str = Field(..., description="The description of the room", examples=["Room1 description"])
+
+
 class RoomDetails(Room):
-    owner: str = Field(..., description="The owner of the room", examples=["johndoe@example.com"])
+    owner: str = Field(..., description="The owner of the room", examples=["user_id1"])
     private: bool = Field(..., description="The privacy status of the room", examples=[True])
     users: list[str] = Field(..., description="The list of users in the room", examples=[["user_id1", "user_id2"]])
-    created_at: str = Field(..., description="The creation date of the room", examples=["2021-01-01T00:00:00Z"])
+    created_at: str = Field(..., description="The creation date of the room",
+                            examples=["1980-01-01T00:00:00.000000+00:00"])
+
+
+class RoomDetailsWithoutUsers(Room):
+    owner: str = Field(..., description="The owner of the room", examples=["user_id1"])
+    private: bool = Field(..., description="The privacy status of the room", examples=[True])
+    created_at: str = Field(..., description="The creation date of the room",
+                            examples=["1980-01-01T00:00:00.000000+00:00"])
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ INPUT MODEL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -77,6 +87,11 @@ class VerifyEmail(BaseModel):
 
 
 class RoomCreate(Room):
+    password: str | None = Field(None, description="The password of the room if any, this makes the room private",
+                                 examples=["password123"])
+
+
+class RoomUpdate(RoomWithoutID):
     password: str | None = Field(None, description="The password of the room if any, this makes the room private",
                                  examples=["password123"])
 
@@ -113,19 +128,18 @@ class RoomResponse(Response):
         "owner": "user_id1",
         "private": True,
         "users": ["user_id1", "user_id2"],
-        "created_at": "2021-01-01T00:00:00Z"
+        "created_at": "1980-01-01T00:00:00.000000+00:00"
     }])
 
 
 class RoomListResponse(Response):
-    rooms: list[RoomDetails] = Field(..., description="The list of rooms", examples=[{
+    rooms: list[RoomDetailsWithoutUsers] = Field(..., description="The list of rooms", examples=[{
         "room_id": "Room1",
         "name": "Room1",
         "description": "Room1 description",
         "owner": "johndoe@example.com",
         "private": True,
-        "users": ["user_id1", "user_id2"],
-        "created_at": "2021-01-01T00:00:00Z"
+        "created_at": "1980-01-01T00:00:00.000000+00:00"
     }])
 
 
@@ -170,7 +184,7 @@ async def authenticate(Authorization: str = Header(description="Bearer access to
     if not Authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Access token")
 
-    access_token = Authorization.split("Bearer ")[1]
+    access_token: str = Authorization.split("Bearer ")[1]
 
     if not access_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Access token")
@@ -325,8 +339,10 @@ async def login(
     """
 
     try:
-        tokens, user_id = await handler.login(**user.model_dump())
-        return LoginResponse(message="ok", tokens=RefreshToken(**tokens), user_id=user_id["user_id"])
+        login_result: tuple = await handler.login(**user.model_dump())
+        tokens: dict[str, str] = login_result[0]
+        user_id: str = login_result[1]["user_id"]
+        return LoginResponse(message="ok", tokens=RefreshToken(**tokens), user_id=user_id)
     except ValueError as e:
         if str(e) == "User not found":
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -366,9 +382,9 @@ async def refresh_access_token(
         if not Authorization.startswith("Bearer "):
             raise ValueError("Refresh token")
 
-        refresh_token = Authorization.split("Bearer ")[1]
+        refresh_token: str = Authorization.split("Bearer ")[1]
 
-        new_access_token = await handler.issue_new_access_token(refresh_token)
+        new_access_token: str = await handler.issue_new_access_token(refresh_token)
         return RefreshResponse(message="ok", tokens=Tokens(access_token=new_access_token, type="Bearer"))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token")
@@ -400,12 +416,12 @@ async def refresh_access_token(
             "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
         }
     })
-async def get_user(user_id, _: str = Depends(authenticate)) -> UserResponse:
+async def get_user(user_id: str, _: str = Depends(authenticate)) -> UserResponse:
     """
     Get the details of a user.
     """
     try:
-        user = await handler.get_user(user_id)
+        user: dict[str, str] = await handler.get_user(user_id)
         return UserResponse(message="ok", user_details=UserDetails(**user))
     except ValueError as e:
         if str(e) == "User not found":
@@ -433,7 +449,7 @@ async def get_user(user_id, _: str = Depends(authenticate)) -> UserResponse:
                 "name": "Room1",
                 "description": "Room1 description",
                 "owner": "user_id1",
-                "created_at": "2021-01-01T00:00:00Z"
+                "created_at": "1980-01-01T00:00:00.000000+00:00"
             }]}}},
         },
         status.HTTP_401_UNAUTHORIZED: {
@@ -450,8 +466,8 @@ async def get_rooms(_: str = Depends(authenticate)) -> RoomListResponse:
     Get the list of public rooms.
     """
     try:
-        rooms = await handler.get_public_rooms()
-        return RoomListResponse(message="ok", rooms=[RoomDetails(**room) for room in rooms])
+        rooms: list[dict[str, str]] = await handler.get_public_rooms()
+        return RoomListResponse(message="ok", rooms=[RoomDetailsWithoutUsers(**room) for room in rooms])
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -471,7 +487,7 @@ async def get_rooms(_: str = Depends(authenticate)) -> RoomListResponse:
                 "owner": "user_id1",
                 "private": True,
                 "users": ["user_id1", "user_id2"],
-                "created_at": "2021-01-01T00:00:00Z"
+                "created_at": "1980-01-01T00:00:00.000000+00:00"
             }}}}
         },
         status.HTTP_401_UNAUTHORIZED: {
@@ -492,7 +508,7 @@ async def get_room(room_id: str, _: str = Depends(authenticate)) -> RoomResponse
     Get the details of a room.
     """
     try:
-        room = await handler.get_room(room_id)
+        room: dict[str, str] = await handler.get_room(room_id)
         return RoomResponse(message="ok", room=RoomDetails(**room))
     except ValueError as e:
         if str(e) == "Room not found":
@@ -541,11 +557,119 @@ async def create_room(
     If password is provided, the room is set to private.
     """
     try:
-        await handler.create_room(user_id, **room.model_dump())
+        await handler.create_room(owner=user_id, **room.model_dump())
         return Response(message="ok")
     except ValueError as e:
         if str(e) == "Room ID taken":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room ID taken")
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.put(
+    "/room/{room_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "Room updated",
+            "content": {"application/json": {"example": {"message": "ok"}}}
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Bad request",
+            "content": {"application/json": {"example": {"message": "<error message>"}}},
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Room not found",
+            "content": {"application/json": {"example": {"message": "Room not found"}}}
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Forbidden",
+            "content": {"application/json": {"example": {"message": "Forbidden"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }
+    })
+async def update_room(
+        room_id: str,
+        room: Annotated[RoomUpdate, Body(
+            title="Room details",
+            description="Endpoint to update a room."
+        )],
+        user_id: str = Depends(authenticate)) -> Response:
+    """
+    Update the details of a room.
+    """
+    try:
+        await handler.update_room(user_id=user_id, room_id=room_id, **room.model_dump())
+        return Response(message="ok")
+    except ValueError as e:
+        if str(e) == "Room not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+
+        if str(e) == "Forbidden":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.delete(
+    "/room/{room_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "Room deleted",
+            "content": {"application/json": {"example": {"message": "ok"}}}
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Bad request",
+            "content": {"application/json": {"example": {"message": "<error message>"}}},
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Room not found",
+            "content": {"application/json": {"example": {"message": "Room not found"}}}
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Forbidden",
+            "content": {"application/json": {"example": {"message": "Forbidden"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }
+    })
+async def delete_room(
+        room_id: str,
+        user_id: str = Depends(authenticate)) -> Response:
+    """
+    Delete a room.
+    """
+    try:
+        await handler.delete_room(room_id=room_id, user_id=user_id)
+        return Response(message="ok")
+    except ValueError as e:
+        if str(e) == "Room not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+
+        if str(e) == "Forbidden":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
