@@ -20,8 +20,8 @@ from app.email import send_verification_email
 
 SECRET_KEY: str
 DB: AsyncIOMotorDatabase
-REFRESH_TOKEN_EXPIRATION_DAYS: int = 30
-ACCESS_TOKEN_EXPIRATION_DAYS: int = 1
+REFRESH_TOKEN_EXPIRATION_DAYS: int = 7
+ACCESS_TOKEN_EXPIRATION_MINUTES: int = 15
 VERIFICATION_CODE_EXPIRATION_MINUTES: int = 10
 PASSWORD_HASHER: PasswordHasher = PasswordHasher()
 
@@ -33,7 +33,7 @@ def initialize() -> None:
     """
     Initialize the global variables
     """
-    global SECRET_KEY, DB, REFRESH_TOKEN_EXPIRATION_DAYS, ACCESS_TOKEN_EXPIRATION_DAYS, VERIFICATION_CODE_EXPIRATION_MINUTES
+    global SECRET_KEY, DB, REFRESH_TOKEN_EXPIRATION_DAYS, ACCESS_TOKEN_EXPIRATION_MINUTES, VERIFICATION_CODE_EXPIRATION_MINUTES
 
     # Set the secret key
     SECRET_KEY = getenv("SECRET_KEY")
@@ -42,7 +42,7 @@ def initialize() -> None:
 
     # Set the expiration times if they are set in the environment variables
     REFRESH_TOKEN_EXPIRATION_DAYS = int(getenv("REFRESH_TOKEN_EXPIRATION_DAYS", REFRESH_TOKEN_EXPIRATION_DAYS))
-    ACCESS_TOKEN_EXPIRATION_DAYS = int(getenv("ACCESS_TOKEN_EXPIRATION_DAYS", ACCESS_TOKEN_EXPIRATION_DAYS))
+    ACCESS_TOKEN_EXPIRATION_MINUTES = int(getenv("ACCESS_TOKEN_EXPIRATION_MINUTES", ACCESS_TOKEN_EXPIRATION_MINUTES))
     VERIFICATION_CODE_EXPIRATION_MINUTES = int(
         getenv("VERIFICATION_CODE_EXPIRATION_MINUTES", VERIFICATION_CODE_EXPIRATION_MINUTES))
 
@@ -73,6 +73,8 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     existing_indexes: dict[str, dict[str, Any]] = await db.users.index_information()
     if "user_id_1" not in existing_indexes:
         await db.users.create_index("user_id", unique=True)
+    if "email_1" not in existing_indexes:
+        await db.users.create_index("email", unique=True)
     if "refresh_token.token_1" not in existing_indexes:
         await db.users.create_index("refresh_token.token", unique=True)
 
@@ -290,6 +292,65 @@ async def get_user(user_id: str) -> dict:
         raise RuntimeError(str(e))
 
 
+async def change_username(user_id: str, username: str) -> None:
+    """
+    Change the username of the user.
+
+    :param user_id: The user ID of the user.
+    :param username: The new username.
+    """
+    if len(username) < 3 or len(username) > 32:
+        raise ValueError("Username must be between 3 and 32 characters")
+
+    if not username.isalnum():
+        raise ValueError("Username must be alphanumeric")
+
+    try:
+        # Check if the user exists
+        user: dict[str, Any] = await DB.users.find_one({"user_id": user_id})
+        if not user:
+            raise ValueError("User not found")
+
+        await DB.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"username": username}}
+        )
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def change_password(user_id: str, password: str, new_password: str) -> None:
+    """
+    Change the password of the user.
+
+    :param user_id: The user ID of the user.
+    :param password: The old password.
+    :param new_password: The new password.
+    """
+    if len(new_password) < 8 or len(new_password) > 32:
+        raise ValueError("Password must be between 8 and 32 characters")
+
+    if new_password == password:
+        raise ValueError("New password cannot be the same as the old password")
+
+    try:
+        # Get the user from the users collection
+        user: dict[str, Any] = await DB.users.find_one({"user_id": user_id})
+        if not user:
+            raise ValueError("User not found")
+
+        # Verify the old password
+        if not verify_password(password, user["hashed_password"]):
+            raise ValueError("Invalid password")
+
+        await DB.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"hashed_password": hash_password(new_password)}}
+        )
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ CHATROOM HANDLERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def get_room(room_id: str) -> dict[str, str]:
     """
@@ -311,11 +372,11 @@ async def get_public_rooms() -> list[dict[str, str]]:
     """
     Get all public rooms from the room collection.
 
-    :return: A list of public rooms with their name, description, and owner.
+    :return: A list of public rooms with their id, name, and description.
     """
     try:
         rooms: list[dict[str, Any]] = await DB.room.find({"private": False},
-                                                         {"password": 0, "_id": 0, "users": 0}).to_list(None)
+                                                         {"room_id": 1, "name": 1, "description": 1}).to_list(None)
         return rooms
     except OperationFailure as e:
         raise RuntimeError(str(e))
@@ -494,6 +555,10 @@ def create_access_token(user_id: str) -> str:
     :return: The access token as a string.
     """
     return encode(
-        {"sub": user_id, "exp": datetime.now(UTC) + timedelta(days=ACCESS_TOKEN_EXPIRATION_DAYS),
+        {"sub": user_id, "exp": datetime.now(UTC) + timedelta(minutes=ACCESS_TOKEN_EXPIRATION_MINUTES),
          "iat": datetime.now(UTC)}, SECRET_KEY, algorithm="HS256"
     )
+
+
+if __name__ == "__main__":
+    print(hash_password("password"))

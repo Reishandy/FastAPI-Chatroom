@@ -46,27 +46,18 @@ class UserDetails(BaseModel):
 
 
 class Room(BaseModel):
+    name: str = Field(..., description="The name of the room", examples=["Room1"])
+    description: str = Field(..., description="The description of the room", examples=["Room1 description"])
+
+
+class RoomWithID(Room):
     room_id: str = Field(..., description="The ID of the room", examples=["room1"])
-    name: str = Field(..., description="The name of the room", examples=["Room1"])
-    description: str = Field(..., description="The description of the room", examples=["Room1 description"])
-
-
-class RoomWithoutID(BaseModel):
-    name: str = Field(..., description="The name of the room", examples=["Room1"])
-    description: str = Field(..., description="The description of the room", examples=["Room1 description"])
 
 
 class RoomDetails(Room):
     owner: str = Field(..., description="The owner of the room", examples=["user_id1"])
     private: bool = Field(..., description="The privacy status of the room", examples=[True])
     users: list[str] = Field(..., description="The list of users in the room", examples=[["user_id1", "user_id2"]])
-    created_at: str = Field(..., description="The creation date of the room",
-                            examples=["1980-01-01T00:00:00.000000+00:00"])
-
-
-class RoomDetailsWithoutUsers(Room):
-    owner: str = Field(..., description="The owner of the room", examples=["user_id1"])
-    private: bool = Field(..., description="The privacy status of the room", examples=[True])
     created_at: str = Field(..., description="The creation date of the room",
                             examples=["1980-01-01T00:00:00.000000+00:00"])
 
@@ -86,14 +77,23 @@ class VerifyEmail(BaseModel):
     code: str = Field(..., description="The verification code", examples=["123456"])
 
 
-class RoomCreate(Room):
+class RoomCreate(RoomWithID):
     password: str | None = Field(None, description="The password of the room if any, this makes the room private",
                                  examples=["password123"])
 
 
-class RoomUpdate(RoomWithoutID):
+class RoomUpdate(Room):
     password: str | None = Field(None, description="The password of the room if any, this makes the room private",
                                  examples=["password123"])
+
+
+class ChangeUsername(BaseModel):
+    username: str = Field(..., description="The new username of the user", examples=["johndoe"])
+
+
+class ChangePassword(BaseModel):
+    password: str = Field(..., description="The new password of the user", examples=["password123"])
+    new_password: str = Field(..., description="The new password of the user", examples=["password123"])
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ OUTPUT MODEL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -101,6 +101,14 @@ class UserResponse(Response):
     user_details: UserDetails = Field(..., description="The user details", examples=[{
         "email": "johndoe@example.com",
         "username": "johndoe"
+    }])
+
+
+class UserResponseWithJoinedRooms(UserResponse):
+    rooms: list[Room] = Field(..., description="The list of rooms the user has joined", examples=[{
+        "room_id": "Room1",
+        "name": "Room1",
+        "description": "Room1 description",
     }])
 
 
@@ -133,13 +141,10 @@ class RoomResponse(Response):
 
 
 class RoomListResponse(Response):
-    rooms: list[RoomDetailsWithoutUsers] = Field(..., description="The list of rooms", examples=[{
+    rooms: list[RoomWithID] = Field(..., description="The list of rooms", examples=[{
         "room_id": "Room1",
         "name": "Room1",
         "description": "Room1 description",
-        "owner": "johndoe@example.com",
-        "private": True,
-        "created_at": "1980-01-01T00:00:00.000000+00:00"
     }])
 
 
@@ -394,6 +399,46 @@ async def refresh_access_token(
 
 
 @app.get(
+    "/user",
+    status_code=status.HTTP_200_OK,
+    response_model=UserResponseWithJoinedRooms,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "User details",
+            "content": {"application/json": {
+                "example": {"message": "ok", "email": "johndoe@exaample.com", "username": "johndoe"}}}
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "User not found",
+            "content": {"application/json": {"example": {"message": "User not found"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }
+    })
+async def get_user(user_id: str = Depends(authenticate)) -> UserResponse:
+    """
+    Get the details of current user.
+    """
+    try:
+        user: dict[str, str] = await handler.get_user(user_id)
+        return UserResponseWithJoinedRooms(message="ok", user_details=UserDetails(**user), rooms=[]) # TODO: Get joined rooms
+    except ValueError as e:
+        if str(e) == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.get(
     "/user/{user_id}",
     status_code=status.HTTP_200_OK,
     response_model=UserResponse,
@@ -433,6 +478,100 @@ async def get_user(user_id: str, _: str = Depends(authenticate)) -> UserResponse
                             detail=f"Internal server error: {str(e)}")
 
 
+@app.put(
+    "/user/username",
+    status_code=status.HTTP_200_OK,
+    response_model=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "Username changed",
+            "content": {"application/json": {"example": {"message": "ok"}}}
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Bad request",
+            "content": {"application/json": {"example": {"message": "<error message>"}}},
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "User not found",
+            "content": {"application/json": {"example": {"message": "User not found"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }})
+async def change_username(
+        username: Annotated[ChangeUsername, Body(
+            title="Username change details",
+            description="Endpoint to change the username of a user."
+        )],
+        user_id: str = Depends(authenticate)) -> Response:
+    """
+    Change the username of the user based on the JWT access token.
+    """
+    try:
+        await handler.change_username(user_id=user_id, **username.model_dump())
+        return Response(message="ok")
+    except ValueError as e:
+        if str(e) == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.put(
+    "/user/password",
+    status_code=status.HTTP_200_OK,
+    response_model=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "Password changed",
+            "content": {"application/json": {"example": {"message": "ok"}}}
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Bad request",
+            "content": {"application/json": {"example": {"message": "<error message>"}}},
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "User not found",
+            "content": {"application/json": {"example": {"message": "User not found"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }})
+async def change_password(
+        password: Annotated[ChangePassword, Body(
+            title="Password change details",
+            description="Endpoint to change the password of a user."
+        )],
+        user_id: str = Depends(authenticate)) -> Response:
+    """
+    Change the password of the user based on the JWT access token.
+    """
+    try:
+        await handler.change_password(user_id=user_id, **password.model_dump())
+        return Response(message="ok")
+    except ValueError as e:
+        if str(e) == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
 #      ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 #      ┃                    CHATROOM ENDPOINTS                    ┃
 #      ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
@@ -448,8 +587,6 @@ async def get_user(user_id: str, _: str = Depends(authenticate)) -> UserResponse
                 "room_id": "Room1",
                 "name": "Room1",
                 "description": "Room1 description",
-                "owner": "user_id1",
-                "created_at": "1980-01-01T00:00:00.000000+00:00"
             }]}}},
         },
         status.HTTP_401_UNAUTHORIZED: {
@@ -467,7 +604,7 @@ async def get_rooms(_: str = Depends(authenticate)) -> RoomListResponse:
     """
     try:
         rooms: list[dict[str, str]] = await handler.get_public_rooms()
-        return RoomListResponse(message="ok", rooms=[RoomDetailsWithoutUsers(**room) for room in rooms])
+        return RoomListResponse(message="ok", rooms=[RoomWithID(**room) for room in rooms])
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -556,6 +693,8 @@ async def create_room(
     Create a new room, with the user as the owner.
     If password is provided, the room is set to private.
     """
+    print(room.model_dump())
+
     try:
         await handler.create_room(owner=user_id, **room.model_dump())
         return Response(message="ok")
