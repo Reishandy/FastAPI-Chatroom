@@ -2,6 +2,8 @@ from os import getenv
 from re import match
 from secrets import choice, token_urlsafe
 from datetime import datetime, timedelta, UTC
+from typing import Any, Coroutine
+from uuid import uuid4
 
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
@@ -69,15 +71,24 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     """
     # Check and create index for users collection
     existing_indexes = await db.users.index_information()
-    if "email_1" not in existing_indexes:
-        await db.users.create_index("email", unique=True)
+    if "user_id_1" not in existing_indexes:
+        await db.users.create_index("user_id", unique=True)
     if "refresh_token.token_1" not in existing_indexes:
         await db.users.create_index("refresh_token.token", unique=True)
 
     # Check and create index for verification_queue collection
     existing_indexes = await db.verification_queue.index_information()
     if "email_1" not in existing_indexes:
-        await db.verification_queue.create_index("email", unique=True)
+        await db.verification_queue.create_index("email_1", unique=True)
+
+    # Check and create index for room collection
+    existing_indexes = await db.room.index_information()
+    if "room_id_1" not in existing_indexes:
+        await db.room.create_index("room_id", unique=True)
+    if "owner_1" not in existing_indexes:
+        await db.chatrooms.create_index("owner")  # Non-unique index for queries
+    if "users_1" not in existing_indexes:
+        await db.chatrooms.create_index("users")  # Non-unique index for queries
 
 
 #      ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -100,6 +111,11 @@ async def add_user_to_verification_queue(email: str, password: str, username: st
     verification_code: str = create_verification_code()
 
     try:
+        # Check if the email is already in the users collection / registered
+        user = await DB.users.find_one({"email": email})
+        if user:
+            raise ValueError("User already exists")
+
         await DB.verification_queue.replace_one(
             {"email": email},
             {
@@ -137,8 +153,11 @@ async def verify_email(email: str, code: str) -> None:
             raise ValueError("Verification not found")
 
         # Perform verification
+        # Ensure timestamp has timezone info
         stored_verification_code = user["verification_code"]
         timestamp = user["timestamp"]
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
 
         if code != stored_verification_code:
             raise ValueError("Invalid verification code")
@@ -147,6 +166,7 @@ async def verify_email(email: str, code: str) -> None:
 
         # Move the user to the users collection
         await DB.users.insert_one({
+            "user_id": create_user_id(),
             "email": user["email"],
             "hashed_password": user["hashed_password"],
             "username": user["username"],
@@ -159,9 +179,9 @@ async def verify_email(email: str, code: str) -> None:
         raise RuntimeError(str(e))
 
 
-async def login(email: str, password: str) -> dict[str, str]:
+async def login(email: str, password: str) -> tuple[dict[str, str], dict[str, str]]:
     """
-    Login the user and return the access token and refresh token.
+    Login the user and return the access token and refresh token, and user_id.
 
     :param email: The email of the user.
     :param password: The password of the user.
@@ -193,9 +213,10 @@ async def login(email: str, password: str) -> dict[str, str]:
         )
 
         # Create the first access token
-        access_token = create_access_token(email)
+        user_id: str = user["user_id"]
+        access_token = create_access_token(user_id)
 
-        return {"refresh_token": refresh_token, "access_token": access_token, "type": "Bearer"}
+        return {"refresh_token": refresh_token, "access_token": access_token, "type": "Bearer"}, {"user_id": user_id}
     except OperationFailure as e:
         raise RuntimeError(str(e))
 
@@ -223,17 +244,17 @@ async def issue_new_access_token(refresh_token: str) -> str:
             raise ValueError("Refresh token expired")
 
         # Create new access token
-        return create_access_token(user["email"])
+        return create_access_token(user["user_id"])
     except OperationFailure as e:
         raise RuntimeError(str(e))
 
 
 async def verify_access_token(token: str) -> str:
     """
-    Verify the access token and return the email of the user.
+    Verify the access token and return the user ID
 
     :param token: The access token to verify.
-    :return: The email of the user.
+    :return: The user ID.
     """
     try:
         decoded = decode(token, SECRET_KEY, algorithms=["HS256"])
@@ -243,6 +264,83 @@ async def verify_access_token(token: str) -> str:
     except InvalidTokenError:
         raise ValueError("Invalid token")
     except Exception as e:
+        raise RuntimeError(str(e))
+
+
+async def get_user(user_id: str) -> dict:
+    """
+    Get the user from the users' collection.
+
+    :param: The user ID of the user.
+    :return: The user's email and username.
+    """
+    try:
+        user = await DB.users.find_one({"user_id": user_id}, {"email": 1, "username": 1})
+        if not user:
+            raise ValueError("User not found")
+        return user
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ CHATROOM HANDLERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+async def create_room(room_id: str, name: str, description: str, owner: str, password: str | None = None) -> None:
+    """
+    Create a room with the given name and description.
+
+    :param room_id: Unique identifier of the room.
+    :param name: The name of the room.
+    :param description: The description of the room.
+    :param password: The password of the room.
+    :param owner: The user_id of the owner of the room.
+    """
+    try:
+        # Check if the room already exists
+        room = await DB.room.find_one({"room_id": room_id})
+        if room:
+            raise ValueError("Room ID taken")
+
+        await DB.room.insert_one({
+            "room_id": room_id,
+            "name": name,
+            "description": description,
+            "password": hash_password(password) if password else None,
+            "private": True if password else False,
+            "owner": owner,
+            "created_at": datetime.now(UTC),
+            "users": [owner]
+        })
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def get_room(room_id: str) -> dict[str, str]:
+    """
+    Get the room from the room collection.
+
+    :param: The room ID of the room.
+    :return: The room's name, description, owner, and users.
+    """
+    try:
+        room = await DB.room.find_one({"room_id": room_id}, {"password": 0, "_id": 0})
+        if not room:
+            raise ValueError("Room not found")
+        return room
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def get_public_rooms() -> list[dict[str, str]]:
+    """
+    Get all public rooms from the room collection.
+
+    :return: A list of public rooms with their name, description, and owner.
+    """
+    try:
+        rooms = await DB.room.find({"private": False}, {"password": 0, "_id": 0, "users": 0}).to_list(None)
+        return rooms
+    except OperationFailure as e:
         raise RuntimeError(str(e))
 
 
@@ -260,6 +358,15 @@ def validate_email(email: str) -> bool:
     if bool(match(r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$', email)):
         return True
     return False
+
+
+def create_user_id() -> str:
+    """
+    Generate a random user ID with UUID4.
+
+    :return: A random user ID as a string.
+    """
+    return str(uuid4())
 
 
 def create_verification_code(length: int = 6) -> str:
@@ -307,14 +414,14 @@ def create_refresh_token() -> str:
     return token_urlsafe(128)
 
 
-def create_access_token(email: str) -> str:
+def create_access_token(user_id: str) -> str:
     """
-    Create a JWT access token using the email as the subject.
+    Create a JWT access token using the user_id as the subject.
 
-    :param email: The email of the user.
+    :param user_id: The user ID to use as the subject.
     :return: The access token as a string.
     """
     return encode(
-        {"sub": email, "exp": datetime.now(UTC) + timedelta(days=ACCESS_TOKEN_EXPIRATION_DAYS),
+        {"sub": user_id, "exp": datetime.now(UTC) + timedelta(days=ACCESS_TOKEN_EXPIRATION_DAYS),
          "iat": datetime.now(UTC)}, SECRET_KEY, algorithm="HS256"
     )
