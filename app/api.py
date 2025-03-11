@@ -12,9 +12,6 @@ import app.handler as handler
 
 
 # TODO: Create
-#  - change password
-#  - change username
-#  ------------
 #  - join room
 #  - leave room
 #  - kick user
@@ -257,10 +254,12 @@ async def register(
         await handler.add_user_to_verification_queue(**user.model_dump())
         return Response(message="ok")
     except ValueError as e:
-        if str(e) == "User already exists":
+        e_string: str = str(e)
+
+        if e_string == "User already exists":
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="User already exists")
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -300,10 +299,12 @@ async def verify_email(
         await handler.verify_email(**verify.model_dump())
         return Response(message="ok")
     except ValueError as e:
-        if str(e) == "Verification not found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Verification not found")
+        e_string: str = str(e)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "Verification not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -349,10 +350,12 @@ async def login(
         user_id: str = login_result[1]["user_id"]
         return LoginResponse(message="ok", tokens=RefreshToken(**tokens), user_id=user_id)
     except ValueError as e:
-        if str(e) == "User not found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        e_string: str = str(e)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -391,7 +394,7 @@ async def refresh_access_token(
 
         new_access_token: str = await handler.issue_new_access_token(refresh_token)
         return RefreshResponse(message="ok", tokens=Tokens(access_token=new_access_token, type="Bearer"))
-    except ValueError as e:
+    except ValueError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Refresh token")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -426,13 +429,16 @@ async def get_user(user_id: str = Depends(authenticate)) -> UserResponse:
     Get the details of current user.
     """
     try:
-        user: dict[str, str] = await handler.get_user(user_id)
-        return UserResponseWithJoinedRooms(message="ok", user_details=UserDetails(**user), rooms=[]) # TODO: Get joined rooms
+        user: dict[str, str] = await handler.get_user_details(user_id)
+        return UserResponseWithJoinedRooms(message="ok", user_details=UserDetails(**user),
+                                           rooms=[])  # TODO: Get joined rooms
     except ValueError as e:
-        if str(e) == "User not found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        e_string: str = str(e)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -466,13 +472,15 @@ async def get_user(user_id: str, _: str = Depends(authenticate)) -> UserResponse
     Get the details of a user.
     """
     try:
-        user: dict[str, str] = await handler.get_user(user_id)
+        user: dict[str, str] = await handler.get_user_details(user_id)
         return UserResponse(message="ok", user_details=UserDetails(**user))
     except ValueError as e:
-        if str(e) == "User not found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        e_string: str = str(e)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -516,10 +524,12 @@ async def change_username(
         await handler.change_username(user_id=user_id, **username.model_dump())
         return Response(message="ok")
     except ValueError as e:
-        if str(e) == "User not found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        e_string: str = str(e)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -563,10 +573,12 @@ async def change_password(
         await handler.change_password(user_id=user_id, **password.model_dump())
         return Response(message="ok")
     except ValueError as e:
-        if str(e) == "User not found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        e_string: str = str(e)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -645,13 +657,15 @@ async def get_room(room_id: str, _: str = Depends(authenticate)) -> RoomResponse
     Get the details of a room.
     """
     try:
-        room: dict[str, str] = await handler.get_room(room_id)
+        room: dict[str, str] = await handler.get_room_details(room_id)
         return RoomResponse(message="ok", room=RoomDetails(**room))
     except ValueError as e:
-        if str(e) == "Room not found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+        e_string: str = str(e)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "Room not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -699,10 +713,12 @@ async def create_room(
         await handler.create_room(owner=user_id, **room.model_dump())
         return Response(message="ok")
     except ValueError as e:
-        if str(e) == "Room ID taken":
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Room ID taken")
+        e_string: str = str(e)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "Room ID taken":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -752,13 +768,15 @@ async def update_room(
         await handler.update_room(user_id=user_id, room_id=room_id, **room.model_dump())
         return Response(message="ok")
     except ValueError as e:
-        if str(e) == "Room not found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+        e_string: str = str(e)
 
-        if str(e) == "Forbidden":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        if e_string == "Room not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "Forbidden":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -804,13 +822,309 @@ async def delete_room(
         await handler.delete_room(room_id=room_id, user_id=user_id)
         return Response(message="ok")
     except ValueError as e:
-        if str(e) == "Room not found":
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+        e_string: str = str(e)
 
-        if str(e) == "Forbidden":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        if e_string == "Room not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
 
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        if e_string == "Forbidden":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.post(
+    "/room/{room_id}/join",
+    status_code=status.HTTP_200_OK,
+    response_model=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "Room joined",
+            "content": {"application/json": {"example": {"message": "ok"}}}
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Bad request",
+            "content": {"application/json": {"example": {"message": "<error message>"}}},
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Room not found",
+            "content": {"application/json": {"example": {"message": "Room not found"}}}
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "Already joined",
+            "content": {"application/json": {"example": {"message": "Already joined"}}}
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Forbidden",
+            "content": {"application/json": {"example": {"message": "Forbidden"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }
+    })
+async def join_room(
+        room_id: str,
+        user_id: str = Depends(authenticate)) -> Response:
+    """
+    Join a room.
+    """
+    try:
+        await handler.join_room(room_id=room_id, user_id=user_id)
+        return Response(message="ok")
+    except ValueError as e:
+        e_string: str = str(e)
+
+        if e_string == "Room not found" or e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        if e_string == "Already joined":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e_string)
+
+        if e_string == "Forbidden":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.post(
+    "/room/{room_id}/leave",
+    status_code=status.HTTP_200_OK,
+    response_model=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "Room left",
+            "content": {"application/json": {"example": {"message": "ok"}}}
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Bad request",
+            "content": {"application/json": {"example": {"message": "<error message>"}}},
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Room not found",
+            "content": {"application/json": {"example": {"message": "Room not found"}}}
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "User not in room",
+            "content": {"application/json": {"example": {"message": "User not in room"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }
+    })
+async def leave_room(
+        room_id: str,
+        user_id: str = Depends(authenticate)) -> Response:
+    """
+    Leave a room.
+    """
+    try:
+        await handler.leave_room(room_id=room_id, user_id=user_id)
+        return Response(message="ok")
+    except ValueError as e:
+        e_string: str = str(e)
+
+        if e_string == "Room not found" or e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        if e_string == "User not in room":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.post(
+    "/room/{room_id}/kick/{target_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "User kicked",
+            "content": {"application/json": {"example": {"message": "ok"}}}
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Bad request",
+            "content": {"application/json": {"example": {"message": "<error message>"}}},
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Room not found",
+            "content": {"application/json": {"example": {"message": "Room not found"}}}
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "User not in room",
+            "content": {"application/json": {"example": {"message": "User not in room"}}}
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Forbidden",
+            "content": {"application/json": {"example": {"message": "Forbidden"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }
+    })
+async def kick_user(
+        room_id: str,
+        target_id: str,
+        user_id: str = Depends(authenticate)) -> Response:
+    """
+    Kick a user from a room.
+    """
+    try:
+        await handler.kick_user(room_id=room_id, owner_id=user_id, target_id=target_id)
+        return Response(message="ok")
+    except ValueError as e:
+        e_string: str = str(e)
+
+        if e_string == "Room not found" or e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        if e_string == "User not in room":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e_string)
+
+        if e_string == "Forbidden":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.post(
+    "/room/{room_id}/ban/{target_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "User banned",
+            "content": {"application/json": {"example": {"message": "ok"}}}
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Bad request",
+            "content": {"application/json": {"example": {"message": "<error message>"}}},
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Room not found",
+            "content": {"application/json": {"example": {"message": "Room not found"}}}
+        },
+        status.HTTP_409_CONFLICT: {
+            "description": "User not in room",
+            "content": {"application/json": {"example": {"message": "User not in room"}}}
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Forbidden",
+            "content": {"application/json": {"example": {"message": "Forbidden"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }
+    })
+async def ban_user(
+        room_id: str,
+        target_id: str,
+        user_id: str = Depends(authenticate)) -> Response:
+    """
+    Ban a user from a room, also kicks the user.
+    """
+    try:
+        await handler.ban_user(room_id=room_id, owner_id=user_id, target_id=target_id)
+        return Response(message="ok")
+    except ValueError as e:
+        e_string: str = str(e)
+
+        if e_string == "Room not found" or e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        if e_string == "User not in room":
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=e_string)
+
+        if e_string == "Forbidden":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.post(
+    "/room/{room_id}/unban/{target_id}",
+    status_code=status.HTTP_200_OK,
+    response_model=Response,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "User unbanned",
+            "content": {"application/json": {"example": {"message": "ok"}}}
+        },
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "Bad request",
+            "content": {"application/json": {"example": {"message": "<error message>"}}},
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "Room not found",
+            "content": {"application/json": {"example": {"message": "Room not found"}}}
+        },
+        status.HTTP_403_FORBIDDEN: {
+            "description": "Forbidden",
+            "content": {"application/json": {"example": {"message": "Forbidden"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }
+    })
+async def unban_user(
+        room_id: str,
+        target_id: str,
+        user_id: str = Depends(authenticate)) -> Response:
+    """
+    Unban a user from a room, does not automatically join the user.
+    """
+    try:
+        await handler.unban_user(room_id=room_id, owner_id=user_id, target_id=target_id)
+        return Response(message="ok")
+    except ValueError as e:
+        e_string: str = str(e)
+
+        if e_string == "Room not found" or e_string == "User not found":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=e_string)
+
+        if e_string == "Forbidden":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e_string)
+
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=e_string)
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")

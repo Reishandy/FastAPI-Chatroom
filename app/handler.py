@@ -181,7 +181,13 @@ async def verify_email(email: str, code: str) -> None:
             "email": user["email"],
             "hashed_password": user["hashed_password"],
             "username": user["username"],
-            "created_at": datetime.now(UTC)
+            "created_at": datetime.now(UTC),
+            "rooms": [],
+            "refresh_token": {
+                "token": "",
+                "issued_at": "",
+                "expiration": ""
+            }
         })
 
         # Remove the user from the verification queue
@@ -203,9 +209,7 @@ async def login(email: str, password: str) -> tuple[dict[str, str], dict[str, st
 
     try:
         # Get the user from the users collection
-        user: dict[str, Any] = await DB.users.find_one({"email": email})
-        if not user:
-            raise ValueError("User not found")
+        user: dict[str, Any] = get_user(email=email)
 
         # Verify the password
         if not verify_password(password, user["hashed_password"]):
@@ -276,7 +280,7 @@ async def verify_access_token(token: str) -> str:
         raise ValueError("Invalid token")
 
 
-async def get_user(user_id: str) -> dict:
+async def get_user_details(user_id: str) -> dict:
     """
     Get the user from the users' collection.
 
@@ -307,9 +311,7 @@ async def change_username(user_id: str, username: str) -> None:
 
     try:
         # Check if the user exists
-        user: dict[str, Any] = await DB.users.find_one({"user_id": user_id})
-        if not user:
-            raise ValueError("User not found")
+        _: dict[str, Any] = get_user(user_id=user_id)
 
         await DB.users.update_one(
             {"user_id": user_id},
@@ -335,9 +337,7 @@ async def change_password(user_id: str, password: str, new_password: str) -> Non
 
     try:
         # Get the user from the users collection
-        user: dict[str, Any] = await DB.users.find_one({"user_id": user_id})
-        if not user:
-            raise ValueError("User not found")
+        user: dict[str, Any] = get_user(user_id=user_id)
 
         # Verify the old password
         if not verify_password(password, user["hashed_password"]):
@@ -352,7 +352,7 @@ async def change_password(user_id: str, password: str, new_password: str) -> Non
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ CHATROOM HANDLERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async def get_room(room_id: str) -> dict[str, str]:
+async def get_room_details(room_id: str) -> dict[str, str]:
     """
     Get the room from the room collection.
 
@@ -415,7 +415,8 @@ async def create_room(room_id: str, name: str, description: str, owner: str, pas
             "private": True if password else False,
             "owner": owner,
             "created_at": datetime.now(UTC).isoformat(),
-            "users": [owner]
+            "users": [owner],
+            "banned_users": []
         })
     except OperationFailure as e:
         raise RuntimeError(str(e))
@@ -473,6 +474,141 @@ async def delete_room(room_id: str, user_id: str) -> None:
             raise ValueError("Forbidden")
 
         await DB.room.delete_one({"room_id": room_id})
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def join_room(room_id: str, user_id: str, password: str | None = None) -> None:
+    """
+    Join a room with the given room_id.
+
+    :param room_id: Unique identifier of the room.
+    :param user_id: The user_id of the user that wants to join the room.
+    :param password: The password of the room.
+    """
+    try:
+        # Get user and room
+        user: dict[str, Any] = get_user(user_id=user_id)
+        room: dict[str, Any] = get_room(room_id)
+
+        # Check if the room is private
+        if room["private"]:
+            if not password:
+                raise ValueError("Password required")
+
+            if not verify_password(password, room["password"]):
+                raise ValueError("Invalid password")
+
+        # Check if the user is already in the room
+        if user_id in room["users"]:
+            raise ValueError("Already joined")
+        if room_id in user["rooms"]:
+            raise ValueError("Already joined")
+
+        # Check if the user is banned from the room
+        if user_id in room["banned_users"]:
+            raise ValueError("Forbidden")
+
+        await DB.room.update_one(
+            {"room_id": room_id},
+            {"$push": {"users": user_id}}
+        )
+        await DB.users.update_one(
+            {"user_id": user_id},
+            {"$push": {"rooms": {
+                "room_id": room_id,
+                "last_read_id": -1
+            }}}
+        )
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def leave_room(room_id: str, user_id: str) -> None:
+    """
+    Leave a room with the given room_id.
+
+    :param room_id: Unique identifier of the room.
+    :param user_id: The user_id of the user that wants to leave the room.
+    """
+    try:
+        # Get user and room
+        user: dict[str, Any] = get_user(user_id=user_id)
+        room: dict[str, Any] = get_room(room_id)
+
+        pull_user_from_room(user_id, room_id, room, user)
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def kick_user(room_id: str, owner_id: str, target_id: str) -> None:
+    """
+    Kick a user from a room.
+
+    :param room_id: Unique identifier of the room.
+    :param owner_id: The user_id of the owner of the room.
+    :param target_id: The user_id of the user to kick.
+    """
+    try:
+        # Get user and room
+        user: dict[str, Any] = get_user(user_id=target_id)
+        room: dict[str, Any] = get_room(room_id)
+
+        # Check if the user is the owner of the room
+        if room["owner"] != owner_id:
+            raise ValueError("Forbidden")
+
+        pull_user_from_room(target_id, room_id, room, user)
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def ban_user(room_id: str, owner_id: str, target_id: str) -> None:
+    """
+    Ban a user from a room.
+
+    :param room_id: Unique identifier of the room.
+    :param owner_id: The user_id of the owner of the room.
+    :param target_id: The user_id of the user to ban.
+    """
+    try:
+        # Get user and room
+        user: dict[str, Any] = get_user(user_id=target_id)
+        room: dict[str, Any] = get_room(room_id)
+
+        # Check if the user is the owner of the room
+        if room["owner"] != owner_id:
+            raise ValueError("Forbidden")
+
+        pull_user_from_room(target_id, room_id, room, user)
+        await DB.room.update_one(
+            {"room_id": room_id},
+            {"$push": {"banned_users": target_id}}
+        )
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def unban_user(room_id: str, owner_id: str, target_id: str) -> None:
+    """
+    Unban a user from a room.
+
+    :param room_id: Unique identifier of the room.
+    :param owner_id: The user_id of the owner of the room.
+    :param target_id: The user_id of the user to unban.
+    """
+    try:
+        # Get room
+        room: dict[str, Any] = get_room(room_id)
+
+        # Check if the user is the owner of the room
+        if room["owner"] != owner_id:
+            raise ValueError("Forbidden")
+
+        await DB.room.update_one(
+            {"room_id": room_id},
+            {"$pull": {"banned_users": target_id}}
+        )
     except OperationFailure as e:
         raise RuntimeError(str(e))
 
@@ -560,5 +696,64 @@ def create_access_token(user_id: str) -> str:
     )
 
 
-if __name__ == "__main__":
-    print(hash_password("password"))
+def get_user(user_id: str | None = None, email: str | None = None) -> dict[str, Any]:
+    """
+    Get the user from the users collection using the user_id or email.
+
+    :param user_id: The user ID of the user.
+    :param email: The email of the user.
+    :return: The user.
+    """
+    try:
+        if user_id:
+            user: dict[str, Any] = DB.users.find_one({"user_id": user_id})
+        elif email:
+            user: dict[str, Any] = DB.users.find_one({"email": email})
+        else:
+            raise ValueError("No user_id or email provided")
+        if not user:
+            raise ValueError("User not found")
+        return user
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+def get_room(room_id: str) -> dict[str, Any]:
+    """
+    Get the room from the room collection using the room_id.
+
+    :param room_id: The room ID of the room.
+    :return: The room.
+    """
+    try:
+        room: dict[str, Any] = DB.room.find_one({"room_id": room_id})
+        if not room:
+            raise ValueError("Room not found")
+        return room
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+def pull_user_from_room(user_id: str, room_id: str, room: dict[str, Any], user: dict[str, Any]) -> None:
+    """
+    Pull the user from the room and the room from the user.
+
+    :param user_id: The user ID of the user.
+    :param room_id: The room ID of the room.
+    :param room: The room dict to pull the user from.
+    :param user: The user dict to pull the room from.
+    """
+    # Check if the user is in the room
+    if user_id not in room["users"]:
+        raise ValueError("User not in room")
+    if room_id not in user["rooms"]:
+        raise ValueError("User not in room")
+
+    DB.room.update_one(
+        {"room_id": room_id},
+        {"$pull": {"users": user_id}}
+    )
+    DB.users.update_one(
+        {"user_id": user_id},
+        {"$pull": {"rooms": {"room_id": room_id}}}
+    )
