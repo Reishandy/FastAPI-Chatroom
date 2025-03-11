@@ -7,16 +7,9 @@ from pydantic import BaseModel, Field
 from starlette import status
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 import app.handler as handler
-
-
-# TODO: Create
-#  - join room
-#  - leave room
-#  - kick user
-#  - ban user
-#  - unban user
 
 
 #      ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -74,13 +67,8 @@ class VerifyEmail(BaseModel):
     code: str = Field(..., description="The verification code", examples=["123456"])
 
 
-class RoomCreate(RoomWithID):
-    password: str | None = Field(None, description="The password of the room if any, this makes the room private",
-                                 examples=["password123"])
-
-
-class RoomUpdate(Room):
-    password: str | None = Field(None, description="The password of the room if any, this makes the room private",
+class RoomPassword(RoomWithID):
+    password: str | None = Field(None, description="The password of the room if any",
                                  examples=["password123"])
 
 
@@ -91,6 +79,11 @@ class ChangeUsername(BaseModel):
 class ChangePassword(BaseModel):
     password: str = Field(..., description="The new password of the user", examples=["password123"])
     new_password: str = Field(..., description="The new password of the user", examples=["password123"])
+
+
+class JoinRoom(BaseModel):
+    password: str | None = Field(None, description="The password of the room if any",
+                                 examples=["password123"])
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ OUTPUT MODEL ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -320,7 +313,7 @@ async def verify_email(
             "content": {"application/json": {"example": {"message": "ok", "tokens": {
                 "access_token": "<access_token>",
                 "refresh_token": "<refresh_token>",
-                "type": "Bearer"}}}},
+                "type": "Bearer"}, "user_id": "user_id1"}}},
         },
         status.HTTP_400_BAD_REQUEST: {
             "description": "Bad request",
@@ -698,7 +691,7 @@ async def get_room(room_id: str, _: str = Depends(authenticate)) -> RoomResponse
         }
     })
 async def create_room(
-        room: Annotated[RoomCreate, Body(
+        room: Annotated[RoomPassword, Body(
             title="Room details",
             description="Endpoint to create a new room."
         )],
@@ -756,7 +749,7 @@ async def create_room(
     })
 async def update_room(
         room_id: str,
-        room: Annotated[RoomUpdate, Body(
+        room: Annotated[RoomPassword, Body(
             title="Room details",
             description="Endpoint to update a room."
         )],
@@ -872,12 +865,16 @@ async def delete_room(
     })
 async def join_room(
         room_id: str,
+        password: Annotated[JoinRoom, Body(
+            title="Room password",
+            description="Password to join a private room."
+        )],
         user_id: str = Depends(authenticate)) -> Response:
     """
-    Join a room.
+    Join a room. status 403 forbidden if the user is banned.
     """
     try:
-        await handler.join_room(room_id=room_id, user_id=user_id)
+        await handler.join_room(room_id=room_id, user_id=user_id, **password.model_dump())
         return Response(message="ok")
     except ValueError as e:
         e_string: str = str(e)
@@ -1128,3 +1125,35 @@ async def unban_user(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
+
+
+@app.websocket("/room/{room_id}")
+async def chatroom(
+        websocket: WebSocket,
+        room_id: str) -> None:
+    """
+    Websocket connection to send and receive messages from a room.
+    """
+    await websocket.accept()
+
+    # Get authorization header
+    headers = dict(websocket.headers)
+    authorization = headers.get("authorization")
+
+    if not authorization:
+        await websocket.close(code=4001, reason="Unauthorized")
+        return
+
+    try:
+        # Verify token and get user_id
+        user_id = await authenticate(authorization)
+
+        await handler.chatroom(websocket=websocket, room_id=room_id, user_id=user_id)
+    except HTTPException:
+        await websocket.close(code=4001, reason="Invalid token")
+    except WebSocketDisconnect:
+        pass
+    except ValueError as e:
+        await websocket.close(code=1008, reason=str(e))
+    except Exception as e:
+        await websocket.close(code=1011, reason=f"Internal server error: {str(e)}")

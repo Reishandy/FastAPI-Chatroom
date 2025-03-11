@@ -1,3 +1,4 @@
+from asyncio import gather
 from datetime import datetime, timedelta, UTC
 from os import getenv
 from re import match
@@ -11,6 +12,7 @@ from dotenv import load_dotenv
 from jwt import encode, decode, ExpiredSignatureError, InvalidTokenError
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
 from pymongo.errors import OperationFailure
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from app.email import send_verification_email
 
@@ -69,28 +71,41 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
 
     :param db: The database instance.
     """
-    # Check and create index for users collection
-    existing_indexes: dict[str, dict[str, Any]] = await db.users.index_information()
-    if "user_id_1" not in existing_indexes:
-        await db.users.create_index("user_id", unique=True)
-    if "email_1" not in existing_indexes:
-        await db.users.create_index("email", unique=True)
-    if "refresh_token.token_1" not in existing_indexes:
-        await db.users.create_index("refresh_token.token", unique=True)
+    # Users collection indexes
+    users_indexes = [
+        ("user_id", {"unique": True}),
+        ("email", {"unique": True}),
+        ("refresh_token.token", {"unique": True})
+    ]
 
-    # Check and create index for verification_queue collection
-    existing_indexes = await db.verification_queue.index_information()
-    if "email_1" not in existing_indexes:
-        await db.verification_queue.create_index("email_1", unique=True)
+    for field, options in users_indexes:
+        if f"{field.replace('.', '_')}_1" not in await db.users.index_information():
+            await db.users.create_index(field, **options)
 
-    # Check and create index for room collection
-    existing_indexes = await db.room.index_information()
-    if "room_id_1" not in existing_indexes:
-        await db.room.create_index("room_id", unique=True)
-    if "owner_1" not in existing_indexes:
-        await db.room.create_index("owner")  # Non-unique index for queries
-    if "users_1" not in existing_indexes:
-        await db.room.create_index("users")  # Non-unique index for queries
+    # Verification queue indexes
+    verification_indexes = [
+        ("email", {"unique": True}),
+        ("timestamp", {})  # For expired verification cleanup
+    ]
+
+    for field, options in verification_indexes:
+        if f"{field.replace('.', '_')}_1" not in await db.verification_queue.index_information():
+            await db.verification_queue.create_index(field, **options)
+
+    # Room collection indexes
+    room_indexes = [
+        ("room_id", {"unique": True}),
+        ("users", {}),  # For user membership queries
+        (
+            [("private", 1), ("name", 1)],  # Compound index for room searches
+            {"name": "private_name"}
+        )
+    ]
+
+    for field, options in room_indexes:
+        index_name = f"{field.replace('.', '_')}_1" if isinstance(field, str) else options.get("name")
+        if index_name not in await db.room.index_information():
+            await db.room.create_index(field, **options)
 
 
 #      ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -100,7 +115,7 @@ async def ensure_indexes(db: AsyncIOMotorDatabase) -> None:
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ AUTH HANDLERS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async def add_user_to_verification_queue(email: str, password: str, username: str) -> None:
     """
-    Add the user into a email verification queue and sends a verification code to the user's email,
+    Add the user into an email verification queue and sends a verification code to the user's email,
     waiting for verification.
 
     :param email: The email of the user.
@@ -149,7 +164,7 @@ async def add_user_to_verification_queue(email: str, password: str, username: st
 
 async def verify_email(email: str, code: str) -> None:
     """
-    Verify the email of the user using the verification code, then move the user to the users collection.
+    Verify the email of the user using the verification code, then move the user to the users' collection.
 
     :param email: The email of the user.
     :param code: The verification code to verify.
@@ -182,12 +197,7 @@ async def verify_email(email: str, code: str) -> None:
             "hashed_password": user["hashed_password"],
             "username": user["username"],
             "created_at": datetime.now(UTC),
-            "rooms": [],
-            "refresh_token": {
-                "token": "",
-                "issued_at": "",
-                "expiration": ""
-            }
+            "rooms": []
         })
 
         # Remove the user from the verification queue
@@ -209,7 +219,7 @@ async def login(email: str, password: str) -> tuple[dict[str, str], dict[str, st
 
     try:
         # Get the user from the users collection
-        user: dict[str, Any] = get_user(email=email)
+        user: dict[str, Any] = await get_user(email=email)
 
         # Verify the password
         if not verify_password(password, user["hashed_password"]):
@@ -311,7 +321,7 @@ async def change_username(user_id: str, username: str) -> None:
 
     try:
         # Check if the user exists
-        _: dict[str, Any] = get_user(user_id=user_id)
+        _: dict[str, Any] = await get_user(user_id=user_id)
 
         await DB.users.update_one(
             {"user_id": user_id},
@@ -337,7 +347,7 @@ async def change_password(user_id: str, password: str, new_password: str) -> Non
 
     try:
         # Get the user from the users collection
-        user: dict[str, Any] = get_user(user_id=user_id)
+        user: dict[str, Any] = await get_user(user_id=user_id)
 
         # Verify the old password
         if not verify_password(password, user["hashed_password"]):
@@ -416,8 +426,19 @@ async def create_room(room_id: str, name: str, description: str, owner: str, pas
             "owner": owner,
             "created_at": datetime.now(UTC).isoformat(),
             "users": [owner],
-            "banned_users": []
+            "banned_users": [],
+            "messages": [],
+            "max_message_id": 0
         })
+
+        # Set latest read id to the owner
+        await DB.users.update_one(
+            {"user_id": owner},
+            {"$push": {"rooms": {
+                "room_id": room_id,
+                "last_read_id": 0
+            }}}
+        )
     except OperationFailure as e:
         raise RuntimeError(str(e))
 
@@ -487,9 +508,9 @@ async def join_room(room_id: str, user_id: str, password: str | None = None) -> 
     :param password: The password of the room.
     """
     try:
-        # Get user and room
-        user: dict[str, Any] = get_user(user_id=user_id)
-        room: dict[str, Any] = get_room(room_id)
+        # Get room
+        _: dict[str, Any] = await get_user(user_id=user_id)
+        room: dict[str, Any] = await get_room(room_id)
 
         # Check if the room is private
         if room["private"]:
@@ -501,8 +522,6 @@ async def join_room(room_id: str, user_id: str, password: str | None = None) -> 
 
         # Check if the user is already in the room
         if user_id in room["users"]:
-            raise ValueError("Already joined")
-        if room_id in user["rooms"]:
             raise ValueError("Already joined")
 
         # Check if the user is banned from the room
@@ -517,7 +536,7 @@ async def join_room(room_id: str, user_id: str, password: str | None = None) -> 
             {"user_id": user_id},
             {"$push": {"rooms": {
                 "room_id": room_id,
-                "last_read_id": -1
+                "last_read_id": 1
             }}}
         )
     except OperationFailure as e:
@@ -533,10 +552,10 @@ async def leave_room(room_id: str, user_id: str) -> None:
     """
     try:
         # Get user and room
-        user: dict[str, Any] = get_user(user_id=user_id)
-        room: dict[str, Any] = get_room(room_id)
+        user: dict[str, Any] = await get_user(user_id=user_id)
+        room: dict[str, Any] = await get_room(room_id)
 
-        pull_user_from_room(user_id, room_id, room, user)
+        await pull_user_from_room(user_id, room_id, room, user)
     except OperationFailure as e:
         raise RuntimeError(str(e))
 
@@ -551,14 +570,17 @@ async def kick_user(room_id: str, owner_id: str, target_id: str) -> None:
     """
     try:
         # Get user and room
-        user: dict[str, Any] = get_user(user_id=target_id)
-        room: dict[str, Any] = get_room(room_id)
+        user: dict[str, Any] = await get_user(user_id=target_id)
+        room: dict[str, Any] = await get_room(room_id)
 
         # Check if the user is the owner of the room
         if room["owner"] != owner_id:
             raise ValueError("Forbidden")
 
-        pull_user_from_room(target_id, room_id, room, user)
+        if owner_id == target_id:
+            raise ValueError("Cannot kick yourself")
+
+        await pull_user_from_room(target_id, room_id, room, user)
     except OperationFailure as e:
         raise RuntimeError(str(e))
 
@@ -573,14 +595,26 @@ async def ban_user(room_id: str, owner_id: str, target_id: str) -> None:
     """
     try:
         # Get user and room
-        user: dict[str, Any] = get_user(user_id=target_id)
-        room: dict[str, Any] = get_room(room_id)
+        user: dict[str, Any] = await get_user(user_id=target_id)
+        room: dict[str, Any] = await get_room(room_id)
 
         # Check if the user is the owner of the room
         if room["owner"] != owner_id:
             raise ValueError("Forbidden")
 
-        pull_user_from_room(target_id, room_id, room, user)
+        if owner_id == target_id:
+            raise ValueError("Cannot ban yourself")
+
+        # If the user is in the room, pull the user from the room
+        try:
+            await pull_user_from_room(target_id, room_id, room, user)
+        except ValueError:
+            pass
+
+        # Check if already banned
+        if target_id in room["banned_users"]:
+            raise ValueError("Already banned")
+
         await DB.room.update_one(
             {"room_id": room_id},
             {"$push": {"banned_users": target_id}}
@@ -599,11 +633,18 @@ async def unban_user(room_id: str, owner_id: str, target_id: str) -> None:
     """
     try:
         # Get room
-        room: dict[str, Any] = get_room(room_id)
+        room: dict[str, Any] = await get_room(room_id)
 
         # Check if the user is the owner of the room
         if room["owner"] != owner_id:
             raise ValueError("Forbidden")
+
+        if owner_id == target_id:
+            raise ValueError("Cannot unban yourself")
+
+        # Check if the user is banned
+        if target_id not in room["banned_users"]:
+            raise ValueError("User not banned")
 
         await DB.room.update_one(
             {"room_id": room_id},
@@ -611,6 +652,124 @@ async def unban_user(room_id: str, owner_id: str, target_id: str) -> None:
         )
     except OperationFailure as e:
         raise RuntimeError(str(e))
+
+
+# this is a mess.... idk man...
+# VERY big caveat: this thing send the entire message history to the client on connection, which is not good if the room has a lot of messages
+# I should implement a way to paginate the messages, but I dont know what to do with the client receiving latest updates while paginating
+async def chatroom(websocket: WebSocket, user_id: str, room_id: str) -> None:
+    """
+    Handle the chatroom websocket connection, send and receive messages.
+
+    :param websocket: The websocket connection.
+    :param user_id: The user ID of the user.
+    :param room_id: The room ID of the room.
+    """
+    # Get user and room
+    user: dict[str, Any] = await get_user(user_id=user_id)
+    room: dict[str, Any] = await get_room(room_id)
+
+    # Check if user has access to room
+    if user_id not in room["users"]:
+        raise ValueError("Forbidden")
+
+    # Get room max message id
+    message_id: int = room["max_message_id"]
+
+    # Get user last read message id
+    last_read_id: int = 0
+    for room_user in user["rooms"]:
+        if room_user["room_id"] == room_id:
+            last_read_id = room_user["last_read_id"]
+            break
+
+    # Get all messages from room
+    room_data: dict[str, Any] = await DB.room.find_one({"room_id": room_id}, {"messages": 1})
+    messages: list[dict[str, Any]] = room_data.get("messages", [])
+
+    try:
+        # Send initial state
+        # format: {type: "initial_state", last_read_id: 1, messages: [{"message_id": 1, "user_id": "user_id", "username": "username", "content": "content", "timestamp": "timestamp"}]}
+        await websocket.send_json({
+            "type": "initial_state",
+            "last_read_id": last_read_id,
+            "messages": messages}
+        )
+
+        # Function to send new messages from database
+        async def send_new_message() -> None:
+            """
+            Send new message gotten from watching changes in the room collection.
+            """
+            user_cache: dict[str, str] = {}
+
+            pipeline = [
+                {
+                    "$match": {
+                        "operationType": "update",
+                        "fullDocument.room_id": room_id,
+                        "$or": [
+                            {"updateDescription.updatedFields.messages": {"$exists": True}},
+                            {"updateDescription.updatedFields.max_message_id": {"$exists": True}}
+                        ]
+                    }
+                }
+            ]
+
+            async with DB.room.watch(pipeline, full_document="updateLookup") as stream:
+                async for change in stream:
+                    new_message = change["fullDocument"]["messages"][-1]
+
+                    # Get username from cache or fetch and cache it
+                    if new_message["user_id"] not in user_cache:
+                        user_details = await get_user_details(new_message["user_id"])
+                        user_cache[new_message["user_id"]] = user_details["username"]
+
+                    new_message["username"] = user_cache[new_message["user_id"]]
+                    await websocket.send_json({"type": "new_message", "message": new_message})
+
+        # Function to listen messages sent by the client
+        async def listen_for_messages() -> None:
+            """
+            Listen for messages sent by the client.
+            """
+            nonlocal message_id
+
+            while True:
+                data: dict[str, str] = await websocket.receive_json()
+
+                if data["type"] != "message":
+                    continue
+
+                content: str = data.get("content", "").strip()
+                if not content or len(content) > 5000:  # Message validation
+                    continue
+
+                message_id += 1
+
+                await DB.room.find_one_and_update(
+                    {"room_id": room_id},
+                    {
+                        "$set": {"max_message_id": message_id},
+                        "$push": {
+                            "messages": {
+                                "message_id": message_id,
+                                "user_id": user_id,
+                                "content": content,
+                                "timestamp": datetime.now(UTC).isoformat()
+                            }
+                        }
+                    },
+                    return_document=True
+                )
+
+        await gather(send_new_message(), listen_for_messages())
+
+    except WebSocketDisconnect:
+        await DB.users.update_one(
+            {"user_id": user_id, "rooms.room_id": room_id},
+            {"$set": {"rooms.$.last_read_id": message_id}}
+        )
 
 
 #      ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -696,7 +855,7 @@ def create_access_token(user_id: str) -> str:
     )
 
 
-def get_user(user_id: str | None = None, email: str | None = None) -> dict[str, Any]:
+async def get_user(user_id: str | None = None, email: str | None = None) -> dict[str, Any]:
     """
     Get the user from the users collection using the user_id or email.
 
@@ -706,9 +865,9 @@ def get_user(user_id: str | None = None, email: str | None = None) -> dict[str, 
     """
     try:
         if user_id:
-            user: dict[str, Any] = DB.users.find_one({"user_id": user_id})
+            user: dict[str, Any] = await DB.users.find_one({"user_id": user_id}, {"_id": 0})
         elif email:
-            user: dict[str, Any] = DB.users.find_one({"email": email})
+            user: dict[str, Any] = await DB.users.find_one({"email": email}, {"_id": 0})
         else:
             raise ValueError("No user_id or email provided")
         if not user:
@@ -718,15 +877,15 @@ def get_user(user_id: str | None = None, email: str | None = None) -> dict[str, 
         raise RuntimeError(str(e))
 
 
-def get_room(room_id: str) -> dict[str, Any]:
+async def get_room(room_id: str) -> dict[str, Any]:
     """
-    Get the room from the room collection using the room_id.
+    Get the room from the room collection using the room_id. not including the messages.
 
     :param room_id: The room ID of the room.
     :return: The room.
     """
     try:
-        room: dict[str, Any] = DB.room.find_one({"room_id": room_id})
+        room: dict[str, Any] = await DB.room.find_one({"room_id": room_id}, {"messages": 0, "_id": 0})
         if not room:
             raise ValueError("Room not found")
         return room
@@ -734,7 +893,7 @@ def get_room(room_id: str) -> dict[str, Any]:
         raise RuntimeError(str(e))
 
 
-def pull_user_from_room(user_id: str, room_id: str, room: dict[str, Any], user: dict[str, Any]) -> None:
+async def pull_user_from_room(user_id: str, room_id: str, room: dict[str, Any], user: dict[str, Any]) -> None:
     """
     Pull the user from the room and the room from the user.
 
@@ -746,14 +905,12 @@ def pull_user_from_room(user_id: str, room_id: str, room: dict[str, Any], user: 
     # Check if the user is in the room
     if user_id not in room["users"]:
         raise ValueError("User not in room")
-    if room_id not in user["rooms"]:
-        raise ValueError("User not in room")
 
-    DB.room.update_one(
+    await DB.room.update_one(
         {"room_id": room_id},
         {"$pull": {"users": user_id}}
     )
-    DB.users.update_one(
+    await DB.users.update_one(
         {"user_id": user_id},
         {"$pull": {"rooms": {"room_id": room_id}}}
     )

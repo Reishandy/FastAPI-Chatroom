@@ -19,6 +19,7 @@ COPY ./app /code/app
 COPY .env /code/.env
 
 # Command to run the application
+# EDIT THIS HOST AND PORT TO MATCH YOUR ENVIRONMENT
 CMD ["/code/venv/bin/uvicorn", "app.api:app", "--host", "192.168.1.99", "--port", "30007"]
 
 # docker build -t chatroom-api .
