@@ -9,7 +9,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-import app.handler as handler
+import handler
 
 
 #      ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -143,7 +143,7 @@ class RoomListResponse(Response):
 
 
 class JoinedRoomResponse(Response):
-    rooms: list[Room] = Field(..., description="The list of joined rooms", examples=[{
+    rooms: list[RoomDetailsWithID] = Field(..., description="The list of joined rooms", examples=[{
         "room_id": "Room1",
         "name": "Room1",
         "description": "Room1 description",
@@ -169,7 +169,22 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(
+    lifespan=lifespan,
+    title="Rei's Chatroom API",
+    description="API for Rei's Chatroom",
+    version="1.3.0",
+    openapi_components={
+        "securitySchemes": {
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT"
+            }
+        }
+    },
+    openapi_security=[{"BearerAuth": []}]
+)
 
 
 # Custom exception handler to change {detail} to {message} for more unified response
@@ -598,7 +613,7 @@ async def change_password(
 #      ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
 @app.get(
-    "/room/public",
+    "/public",
     status_code=status.HTTP_200_OK,
     response_model=RoomListResponse,
     responses={
@@ -626,6 +641,49 @@ async def get_rooms(_: str = Depends(authenticate)) -> RoomListResponse:
     try:
         rooms: list[dict[str, str]] = await handler.get_public_rooms()
         return RoomListResponse(message="ok", rooms=[RoomWithID(**room) for room in rooms])
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=f"Internal server error: {str(e)}")
+
+
+@app.get(
+    "/joined",
+    status_code=status.HTTP_200_OK,
+    response_model=RoomListResponse,
+    responses={
+        status.HTTP_200_OK: {
+            "description": "Rooms joined",
+            "content": {"application/json": {"example": {"message": "ok", "rooms": [{
+                "room_id": "Room1",
+                "name": "Room1",
+                "description": "Room1 description",
+                "owner": "user_id1",
+                "private": True,
+                "users": ["user_id1", "user_id2"],
+                "created_at": "1980-01-01T00:00:00.000000+00:00"
+            }]}}}
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "description": "Unauthorized",
+            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "Internal server error",
+            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
+        }
+    })
+async def get_joined_room(user_id: str = Depends(authenticate)) -> JoinedRoomResponse:
+    """
+    Returns user's joined room details.
+    """
+    try:
+        rooms: list[dict[str, str]] = await handler.get_user_rooms(user_id)
+        print(rooms)
+        rooms1 = [RoomDetailsWithID(**room) for room in rooms]
+        print(rooms1)
+        rooms3 = JoinedRoomResponse(message="ok", rooms=rooms1)
+        print(rooms3)
+        return JoinedRoomResponse(message="ok", rooms=[RoomDetailsWithID(**room) for room in rooms])
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
@@ -678,45 +736,6 @@ async def get_room(room_id: str, _: str = Depends(authenticate)) -> RoomResponse
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail=f"Internal server error: {str(e)}")
-
-
-@app.get(
-    "/room/joined",
-    status_code=status.HTTP_200_OK,
-    response_model=RoomListResponse,
-    responses={
-        status.HTTP_200_OK: {
-            "description": "Rooms joined",
-            "content": {"application/json": {"example": {"message": "ok", "rooms": [{
-                "room_id": "Room1",
-                "name": "Room1",
-                "description": "Room1 description",
-                "owner": "user_id1",
-                "private": True,
-                "users": ["user_id1", "user_id2"],
-                "created_at": "1980-01-01T00:00:00.000000+00:00"
-            }]}}}
-        },
-        status.HTTP_401_UNAUTHORIZED: {
-            "description": "Unauthorized",
-            "content": {"application/json": {"example": {"message": "Unauthorized"}}}
-        },
-        status.HTTP_500_INTERNAL_SERVER_ERROR: {
-            "description": "Internal server error",
-            "content": {"application/json": {"example": {"message": "Internal server error: {error}"}}}
-        }
-    })
-async def get_joined_room(user_id: str = Depends(authenticate)) -> JoinedRoomResponse:
-    """
-    Returns user's joined room details.
-    """
-    try:
-        rooms: list[dict[str, str]] = await handler.get_user_rooms(user_id)
-        return JoinedRoomResponse(message="ok", rooms=[RoomDetailsWithID(**room) for room in rooms])
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail=f"Internal server error: {str(e)}")
-
 
 
 @app.post(

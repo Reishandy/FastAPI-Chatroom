@@ -14,7 +14,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
 from pymongo.errors import OperationFailure
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from app.email import send_verification_email
+from email_sender import send_verification_email
 
 #      ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 #      ┃                     GLOBAL VARIABLES                     ┃
@@ -370,7 +370,9 @@ async def get_room_details(room_id: str) -> dict[str, str]:
     :return: The room's name, description, owner, and users.
     """
     try:
-        room: dict[str, Any] = await DB.room.find_one({"room_id": room_id}, {"password": 0, "_id": 0})
+        room: dict[str, Any] = await DB.room.find_one({"room_id": room_id},
+                                                      {"name": 1, "description": 1, "owner": 1, "private": 1,
+                                                       "users": 1, "created_at": 1, "_id": 0})
         if not room:
             raise ValueError("Room not found")
         return room
@@ -400,11 +402,12 @@ async def get_user_rooms(user_id: str) -> list[dict[str, str]]:
     :return: A list of rooms with their id, name, and description.
     """
     try:
-        rooms: list[dict[str, Any]] = await DB.room.find({"user_id": user_id}, {"_id": 0, "password": 0}).to_list(None)
+        rooms: list[dict[str, Any]] = await DB.room.find({"users": {"$in": [user_id]}},
+                                                          {"name": 1, "description": 1, "owner": 1, "private": 1,
+                                                           "users": 1, "created_at": 1, "room_id": 1, "_id": 0}).to_list(None)
         return rooms
     except OperationFailure as e:
         raise RuntimeError(str(e))
-
 
 
 async def create_room(room_id: str, name: str, description: str, owner: str, password: str | None = None) -> None:

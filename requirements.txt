@@ -1,4 +1,4 @@
-fastapi~=0.115.11
+fastapi[standard]~=0.115.11
 starlette~=0.46.1
 dotenv~=0.9.9
 python-dotenv~=1.0.1
