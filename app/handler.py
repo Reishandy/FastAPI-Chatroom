@@ -392,6 +392,21 @@ async def get_public_rooms() -> list[dict[str, str]]:
         raise RuntimeError(str(e))
 
 
+async def get_user_rooms(user_id: str) -> list[dict[str, str]]:
+    """
+    Get all room the user is in.
+
+    :param user_id: The user ID of the user.
+    :return: A list of rooms with their id, name, and description.
+    """
+    try:
+        rooms: list[dict[str, Any]] = await DB.room.find({"user_id": user_id}, {"_id": 0, "password": 0}).to_list(None)
+        return rooms
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+
 async def create_room(room_id: str, name: str, description: str, owner: str, password: str | None = None) -> None:
     """
     Create a room with the given name and description.

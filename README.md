@@ -71,7 +71,10 @@ Rei's Chatroom is a real-time, WebSocket-based chat application built using Fast
 ### **Room Management**
 
 #### **List Public Rooms**
-**GET /room**
+**GET /room/public**
+
+#### **List User Joined Rooms**
+**GET /room/joined**
 
 #### **Get Room Details**
 **GET /room/{room_id}**
