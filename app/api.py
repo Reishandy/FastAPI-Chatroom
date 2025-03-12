@@ -173,17 +173,7 @@ app = FastAPI(
     lifespan=lifespan,
     title="Rei's Chatroom API",
     description="API for Rei's Chatroom",
-    version="1.2",
-    openapi_components={
-        "securitySchemes": {
-            "BearerAuth": {
-                "type": "http",
-                "scheme": "bearer",
-                "bearerFormat": "JWT"
-            }
-        }
-    },
-    openapi_security=[{"BearerAuth": []}]
+    version="1.2"
 )
 
 
@@ -658,7 +648,7 @@ async def get_rooms(_: str = Depends(authenticate)) -> RoomListResponse:
 @app.get(
     "/joined",
     status_code=status.HTTP_200_OK,
-    response_model=RoomListResponse,
+    response_model=JoinedRoomResponse,
     tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
@@ -688,11 +678,6 @@ async def get_joined_room(user_id: str = Depends(authenticate)) -> JoinedRoomRes
     """
     try:
         rooms: list[dict[str, str]] = await handler.get_user_rooms(user_id)
-        print(rooms)
-        rooms1 = [RoomDetailsWithID(**room) for room in rooms]
-        print(rooms1)
-        rooms3 = JoinedRoomResponse(message="ok", rooms=rooms1)
-        print(rooms3)
         return JoinedRoomResponse(message="ok", rooms=[RoomDetailsWithID(**room) for room in rooms])
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
