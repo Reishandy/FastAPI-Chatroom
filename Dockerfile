@@ -20,7 +20,7 @@ COPY .env /code/.env
 
 # Command to run the application
 # EDIT THIS HOST AND PORT TO MATCH YOUR ENVIRONMENT
-CMD ["/code/venv/bin/fastapi", "run app/api.py", "--host", "192.168.1.99", "--port", "30008"]
+CMD ["/code/venv/bin/fastapi", "run", "app/api.py", "--host", "192.168.1.99", "--port", "30008"]
 
 # docker build -t chatroom-api .
 # docker run -d --name chatroom-api-container --network host --restart always chatroom-api
