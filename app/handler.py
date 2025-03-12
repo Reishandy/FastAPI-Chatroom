@@ -569,11 +569,10 @@ async def leave_room(room_id: str, user_id: str) -> None:
     :param user_id: The user_id of the user that wants to leave the room.
     """
     try:
-        # Get user and room
-        user: dict[str, Any] = await get_user(user_id=user_id)
+        # Get room
         room: dict[str, Any] = await get_room(room_id)
 
-        await pull_user_from_room(user_id, room_id, room, user)
+        await pull_user_from_room(user_id, room_id, room)
     except OperationFailure as e:
         raise RuntimeError(str(e))
 
@@ -587,8 +586,7 @@ async def kick_user(room_id: str, owner_id: str, target_id: str) -> None:
     :param target_id: The user_id of the user to kick.
     """
     try:
-        # Get user and room
-        user: dict[str, Any] = await get_user(user_id=target_id)
+        # Get room
         room: dict[str, Any] = await get_room(room_id)
 
         # Check if the user is the owner of the room
@@ -598,7 +596,7 @@ async def kick_user(room_id: str, owner_id: str, target_id: str) -> None:
         if owner_id == target_id:
             raise ValueError("Cannot kick yourself")
 
-        await pull_user_from_room(target_id, room_id, room, user)
+        await pull_user_from_room(target_id, room_id, room)
     except OperationFailure as e:
         raise RuntimeError(str(e))
 
@@ -612,8 +610,7 @@ async def ban_user(room_id: str, owner_id: str, target_id: str) -> None:
     :param target_id: The user_id of the user to ban.
     """
     try:
-        # Get user and room
-        user: dict[str, Any] = await get_user(user_id=target_id)
+        # Get room
         room: dict[str, Any] = await get_room(room_id)
 
         # Check if the user is the owner of the room
@@ -625,7 +622,7 @@ async def ban_user(room_id: str, owner_id: str, target_id: str) -> None:
 
         # If the user is in the room, pull the user from the room
         try:
-            await pull_user_from_room(target_id, room_id, room, user)
+            await pull_user_from_room(target_id, room_id, room)
         except ValueError:
             pass
 
@@ -672,9 +669,9 @@ async def unban_user(room_id: str, owner_id: str, target_id: str) -> None:
         raise RuntimeError(str(e))
 
 
-# this is a mess.... idk man...
+# this is a mess.... IDK man...
 # VERY big caveat: this thing send the entire message history to the client on connection, which is not good if the room has a lot of messages
-# I should implement a way to paginate the messages, but I dont know what to do with the client receiving latest updates while paginating
+# I should implement a way to paginate the messages, but I don't know what to do with the client receiving latest updates while paginating
 async def chatroom(websocket: WebSocket, user_id: str, room_id: str) -> None:
     """
     Handle the chatroom websocket connection, send and receive messages.
@@ -911,14 +908,13 @@ async def get_room(room_id: str) -> dict[str, Any]:
         raise RuntimeError(str(e))
 
 
-async def pull_user_from_room(user_id: str, room_id: str, room: dict[str, Any], user: dict[str, Any]) -> None:
+async def pull_user_from_room(user_id: str, room_id: str, room: dict[str, Any]) -> None:
     """
     Pull the user from the room and the room from the user.
 
     :param user_id: The user ID of the user.
     :param room_id: The room ID of the room.
     :param room: The room dict to pull the user from.
-    :param user: The user dict to pull the room from.
     """
     # Check if the user is in the room
     if user_id not in room["users"]:
