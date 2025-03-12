@@ -173,7 +173,7 @@ app = FastAPI(
     lifespan=lifespan,
     title="Rei's Chatroom API",
     description="API for Rei's Chatroom",
-    version="1.3.0",
+    version="1.3",
     openapi_components={
         "securitySchemes": {
             "BearerAuth": {
@@ -247,6 +247,7 @@ async def root() -> dict[str, str]:
     "/register",
     status_code=status.HTTP_201_CREATED,
     response_model=Response,
+    tags=["Authentication"],
     responses={
         status.HTTP_201_CREATED: {
             "description": "User registered",
@@ -293,6 +294,7 @@ async def register(
     "/verify",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Authentication"],
     responses={
         status.HTTP_200_OK: {
             "description": "Email verified",
@@ -338,6 +340,7 @@ async def verify_email(
     "/login",
     status_code=status.HTTP_200_OK,
     response_model=LoginResponse,
+    tags=["Authentication"],
     responses={
         status.HTTP_200_OK: {
             "description": "User logged in",
@@ -389,6 +392,7 @@ async def login(
     "/refresh",
     status_code=status.HTTP_200_OK,
     response_model=RefreshResponse,
+    tags=["Authentication"],
     responses={
         status.HTTP_200_OK: {
             "description": "Token refreshed",
@@ -429,6 +433,7 @@ async def refresh_access_token(
     "/user",
     status_code=status.HTTP_200_OK,
     response_model=UserResponseWithJoinedRooms,
+    tags=["Authentication"],
     responses={
         status.HTTP_200_OK: {
             "description": "User details",
@@ -472,6 +477,7 @@ async def get_user(user_id: str = Depends(authenticate)) -> UserResponse:
     "/user/{user_id}",
     status_code=status.HTTP_200_OK,
     response_model=UserResponse,
+    tags=["Authentication"],
     responses={
         status.HTTP_200_OK: {
             "description": "User details",
@@ -514,6 +520,7 @@ async def get_user(user_id: str, _: str = Depends(authenticate)) -> UserResponse
     "/user/username",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Authentication"],
     responses={
         status.HTTP_200_OK: {
             "description": "Username changed",
@@ -563,6 +570,7 @@ async def change_username(
     "/user/password",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Authentication"],
     responses={
         status.HTTP_200_OK: {
             "description": "Password changed",
@@ -616,6 +624,7 @@ async def change_password(
     "/public",
     status_code=status.HTTP_200_OK,
     response_model=RoomListResponse,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "Rooms list",
@@ -650,6 +659,7 @@ async def get_rooms(_: str = Depends(authenticate)) -> RoomListResponse:
     "/joined",
     status_code=status.HTTP_200_OK,
     response_model=RoomListResponse,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "Rooms joined",
@@ -693,6 +703,7 @@ async def get_joined_room(user_id: str = Depends(authenticate)) -> JoinedRoomRes
     "/room/{room_id}",
     status_code=status.HTTP_200_OK,
     response_model=RoomResponse,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "Room details",
@@ -742,6 +753,7 @@ async def get_room(room_id: str, _: str = Depends(authenticate)) -> RoomResponse
     "/room",
     status_code=status.HTTP_201_CREATED,
     response_model=Response,
+    tags=["Chatroom"],
     responses={
         status.HTTP_201_CREATED: {
             "description": "Room created",
@@ -795,6 +807,7 @@ async def create_room(
     "/room/{room_id}",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "Room updated",
@@ -853,6 +866,7 @@ async def update_room(
     "/room/{room_id}",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "Room deleted",
@@ -907,6 +921,7 @@ async def delete_room(
     "/room/{room_id}/join",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "Room joined",
@@ -972,6 +987,7 @@ async def join_room(
     "/room/{room_id}/leave",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "Room left",
@@ -1026,6 +1042,7 @@ async def leave_room(
     "/room/{room_id}/kick/{target_id}",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "User kicked",
@@ -1088,6 +1105,7 @@ async def kick_user(
     "/room/{room_id}/ban/{target_id}",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "User banned",
@@ -1150,6 +1168,7 @@ async def ban_user(
     "/room/{room_id}/unban/{target_id}",
     status_code=status.HTTP_200_OK,
     response_model=Response,
+    tags=["Chatroom"],
     responses={
         status.HTTP_200_OK: {
             "description": "User unbanned",
