@@ -173,7 +173,7 @@ app = FastAPI(
     lifespan=lifespan,
     title="Rei's Chatroom API",
     description="API for Rei's Chatroom",
-    version="1.2"
+    version="1.3"
 )
 
 

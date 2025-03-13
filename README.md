@@ -122,6 +122,8 @@ Rei's Chatroom is a real-time, WebSocket-based chat application built using Fast
 wss://yourserver.com/ws/chat/{room_id}?token={access_token}
 ```
 
+Example JavaScript WebSocket client:
+
 ```javascript
 const socket = new WebSocket("ws://yourserver.com/ws/chat/room1?token=your_access_token");
 
@@ -130,27 +132,129 @@ socket.onmessage = (event) => console.log("New message:", JSON.parse(event.data)
 socket.onclose = () => console.log("Disconnected");
 ```
 
-#### **Sending Messages**
+#### **Initial State**
+The server sends the initial state of the room, including the last read message ID and a range of messages.
+
 ```json
 {
-    "type": "message",
-    "content": "Hello, world!"
+    "type": "initial_state",
+    "last_read_id": 1,
+    "messages": [
+        {
+            "message_id": 1,
+            "user_id": "user_id",
+            "username": "username",
+            "content": "content",
+            "timestamp": "timestamp"
+        }
+    ]
 }
 ```
 
-#### **Receiving Messages**
+#### **Fetch Messages**
+The client requests a range of messages from the room, for client-side pagination.
+
 ```json
 {
-    "type": "new_message",
+    "type": "fetch",
+    "from_id": 1,
+    "to_id": 10
+}
+```
+
+The server responds with the requested messages.
+
+```json
+{
+    "type": "fetch_response",
+    "messages": [
+        {
+            "message_id": 1,
+            "user_id": "user_id",
+            "username": "username",
+            "content": "content",
+            "timestamp": "timestamp"
+        }
+    ]
+}
+```
+
+#### **Set Latest Read Message ID**
+The client sends the latest read message ID to the server.
+
+```json
+{
+    "type": "set_last_read",
+    "message_id": 10
+}
+```
+
+#### **Listen for Latest Messages**
+The client request to starts listening for the latest messages.
+
+```json
+{
+    "type": "listen_latest"
+}
+```
+
+The server will start sending latest messages to the client.
+
+```json
+{
+    "type": "latest_message",
     "message": {
-        "message_id": 10,
-        "user_id": "user123",
-        "username": "JohnDoe",
-        "content": "Hey there!",
-        "timestamp": "2025-03-12T10:00:00Z"
+        "message_id": 1,
+        "user_id": "user_id",
+        "username": "username",
+        "content": "content",
+        "timestamp": "timestamp"
     }
 }
 ```
+
+#### **Send a Message**
+The client sends a new message to the server.
+
+```json
+{
+    "type": "message",
+    "content": "Hello, World!"
+}
+```
+
+### WebSocket Chatroom Recommended Flow
+1. Server sends initial state:  
+   - The server sends the initial state of the room, including the last read message ID and a range of messages (-20 to +30).
+
+2. Client checks initial state:  
+   - The client checks if the initial state max message ID is >= 30. If not, the user starts listening for the latest messages.
+
+3. Client sends fetch request:  
+   - The client sends a fetch request based on the last read ID and their own pagination mechanism. If the response is empty or less than the fetch to_id, the client starts listening for the latest messages.
+
+4. Client sets last read message ID:  
+   - The client sends a set_last_read request to update the last read message ID after receiving the fetch response (get max message ID).
+
+5. Client sends a message:  
+   - The client can send a message to the room at any time.
+   - The server will automatically update the latest message ID for the user.
+
+6. Client listens for latest messages:
+   - The client listens for the latest messages if the initial state max message ID is < 30 and the fetch response is empty or less than the fetch to_id.
+
+> **Note:** Make sure to properly close the WebSocket connection and handle websocket errors.
+
+### **Websocket Errors**
+1. **4001: Invalid Token or 4001: Unauthorized**
+   - The access token is invalid or expired.
+
+2. **1008: ValueError**
+   - If the room ID not found or invalid.
+   - If the user is forbidden to access the room, not joined.
+
+3. **1011: Internal Server Error**
+   - If there is an internal server error.
 
 ## Installation
 

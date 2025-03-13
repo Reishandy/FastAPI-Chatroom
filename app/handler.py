@@ -6,6 +6,7 @@ from secrets import choice, token_urlsafe
 from typing import Any
 from uuid import uuid4
 
+from annotated_types.test_cases import cases
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from dotenv import load_dotenv
@@ -403,8 +404,9 @@ async def get_user_rooms(user_id: str) -> list[dict[str, str]]:
     """
     try:
         rooms: list[dict[str, Any]] = await DB.room.find({"users": {"$in": [user_id]}},
-                                                          {"name": 1, "description": 1, "owner": 1, "private": 1,
-                                                           "users": 1, "created_at": 1, "room_id": 1, "_id": 0}).to_list(None)
+                                                         {"name": 1, "description": 1, "owner": 1, "private": 1,
+                                                          "users": 1, "created_at": 1, "room_id": 1, "_id": 0}).to_list(
+            None)
         return rooms
     except OperationFailure as e:
         raise RuntimeError(str(e))
@@ -554,7 +556,7 @@ async def join_room(room_id: str, user_id: str, password: str | None = None) -> 
             {"user_id": user_id},
             {"$push": {"rooms": {
                 "room_id": room_id,
-                "last_read_id": 1
+                "last_read_id": 0
             }}}
         )
     except OperationFailure as e:
@@ -670,121 +672,125 @@ async def unban_user(room_id: str, owner_id: str, target_id: str) -> None:
 
 
 # this is a mess.... IDK man...
-# VERY big caveat: this thing send the entire message history to the client on connection, which is not good if the room has a lot of messages
-# I should implement a way to paginate the messages, but I don't know what to do with the client receiving latest updates while paginating
 async def chatroom(websocket: WebSocket, user_id: str, room_id: str) -> None:
     """
     Handle the chatroom websocket connection, send and receive messages.
+
+    Servers sends:
+        - initial_state: The initial state of the room. {type: "initial_state", last_read_id: 1, messages: [{"message_id": 1, "user_id": "user_id", "username": "username", "content": "content", "timestamp": "timestamp"}]}
+        - fetch_response: The response to a fetch request. {type: "fetch_response", messages: [{"message_id": 1, "user_id": "user_id", "username": "username", "content": "content", "timestamp": "timestamp"}]}
+        - latest_message: The latest message in the room. {type: "latest_message", message: {"message_id": 1, "user_id": "user_id", "username": "username", "content": "content", "timestamp": "timestamp"}}
+
+    Servers listens:
+        - fetch: Fetch messages from the room. {type: "fetch", from_id: 1, to_id: 10}
+        - set_last_read: Set the last read message id. {type: "set_last_read", last_read_id: 10}
+        - listen_latest: Listen for the latest messages. {type: "listen_latest"}
+        - message: Send a message to the room. {type: "message", content: "content"}
+
+    Flow:
+        - server sends initial state
+        - user checks if initial state max message id is >= 30, if not starts listening for latest messages
+        - user sends fetch request based on the last read id and own pagination mechanism,
+            if returns empty or less than fetch to_id, starts listening for latest messages
+        - user sends set_last_read to the last message id every fetch after receiving the fetch response (get max message id)
+        - user sends message to the room (any time)
+        - user listens for latest messages (only if initial state max message id is < 30 and fetch returns empty or less than fetch to_id)
 
     :param websocket: The websocket connection.
     :param user_id: The user ID of the user.
     :param room_id: The room ID of the room.
     """
     # Get user and room
-    user: dict[str, Any] = await get_user(user_id=user_id)
+    _: dict[str, Any] = await get_user(user_id=user_id)
     room: dict[str, Any] = await get_room(room_id)
 
     # Check if user has access to room
     if user_id not in room["users"]:
         raise ValueError("Forbidden")
 
-    # Get room max message id
-    message_id: int = room["max_message_id"]
+    # Flag for listen_latest
+    listen_latest: bool = False
 
-    # Get user last read message id
-    last_read_id: int = 0
-    for room_user in user["rooms"]:
-        if room_user["room_id"] == room_id:
-            last_read_id = room_user["last_read_id"]
-            break
+    # Sends initial state, last read id and messages from -20 to +30 of the last message
+    latest_read_id: int = room["last_read_id"]
+    initial_messages: list[dict[str, Any]] = await get_messages(room_id, latest_read_id - 20, latest_read_id + 30)
+    await websocket.send_json({
+        "type": "initial_state",
+        "last_read_id": latest_read_id,
+        "messages": initial_messages
+    })
 
-    # Get all messages from room
-    room_data: dict[str, Any] = await DB.room.find_one({"room_id": room_id}, {"messages": 1})
-    messages: list[dict[str, Any]] = room_data.get("messages", [])
+    # Listener function
+    async def listener() -> None:
+        """
+        Listen for user requests.
+        """
+        nonlocal listen_latest
 
-    try:
-        # Send initial state
-        # format: {type: "initial_state", last_read_id: 1, messages: [{"message_id": 1, "user_id": "user_id", "username": "username", "content": "content", "timestamp": "timestamp"}]}
-        await websocket.send_json({
-            "type": "initial_state",
-            "last_read_id": last_read_id,
-            "messages": messages}
-        )
+        while True:
+            data: dict[str, Any] = await websocket.receive_json()
 
-        # Function to send new messages from database
-        async def send_new_message() -> None:
-            """
-            Send new message gotten from watching changes in the room collection.
-            """
-            user_cache: dict[str, str] = {}
+            match data["type"]:
+                case "fetch":
+                    from_id: int = int(data["from_id"])
+                    to_id: int = int(data["to_id"])
+                    messages: list[dict[str, Any]] = await get_messages(room_id, from_id, to_id)
 
-            pipeline = [
-                {
-                    "$match": {
-                        "operationType": "update",
-                        "fullDocument.room_id": room_id,
-                        "$or": [
-                            {"updateDescription.updatedFields.messages": {"$exists": True}},
-                            {"updateDescription.updatedFields.max_message_id": {"$exists": True}}
-                        ]
-                    }
+                    await websocket.send_json({
+                        "type": "fetch_response",
+                        "messages": messages
+                    })
+                case "set_last_read":
+                    last_read_id: int = int(data["message_id"])
+                    await update_last_read_id(user_id, room_id, last_read_id)
+                case "listen_latest":
+                    listen_latest = True
+                case "message":
+                    content: str = data.get("content", "").strip()
+                    if not content or len(content) > 5000:  # Message validation
+                        continue
+
+                    max_message_id: int = await store_message(room_id, user_id, content)
+                    await update_last_read_id(user_id, room_id, max_message_id)
+                case _:
+                    continue
+
+    # Send latest messages, if listen_latest is True
+    async def send_latest() -> None:
+        """
+        Send the latest messages to the client, if listen_latest is True.
+        """
+        user_cache: dict[str, str] = {}
+
+        pipeline: list[dict[str, Any]] = [
+            {
+                "$match": {
+                    "operationType": "update",
+                    "fullDocument.room_id": room_id,
+                    "$or": [
+                        {"updateDescription.updatedFields.messages": {"$exists": True}},
+                        {"updateDescription.updatedFields.max_message_id": {"$exists": True}}
+                    ]
                 }
-            ]
+            }
+        ]
 
-            async with DB.room.watch(pipeline, full_document="updateLookup") as stream:
-                async for change in stream:
-                    new_message = change["fullDocument"]["messages"][-1]
-
-                    # Get username from cache or fetch and cache it
-                    if new_message["user_id"] not in user_cache:
-                        user_details = await get_user_details(new_message["user_id"])
-                        user_cache[new_message["user_id"]] = user_details["username"]
-
-                    new_message["username"] = user_cache[new_message["user_id"]]
-                    await websocket.send_json({"type": "new_message", "message": new_message})
-
-        # Function to listen messages sent by the client
-        async def listen_for_messages() -> None:
-            """
-            Listen for messages sent by the client.
-            """
-            nonlocal message_id
-
-            while True:
-                data: dict[str, str] = await websocket.receive_json()
-
-                if data["type"] != "message":
+        async with DB.room.watch(pipeline, full_document="updateLookup") as stream:
+            async for change in stream:
+                if not listen_latest:
                     continue
 
-                content: str = data.get("content", "").strip()
-                if not content or len(content) > 5000:  # Message validation
-                    continue
+                new_message: dict[str, Any] = change["fullDocument"]["messages"][-1]
 
-                message_id += 1
+                # Get username from cache or fetch and cache it
+                if new_message["user_id"] not in user_cache:
+                    user_details: dict[str, Any] = await get_user_details(new_message["user_id"])
+                    user_cache[new_message["user_id"]] = user_details["username"]
 
-                await DB.room.find_one_and_update(
-                    {"room_id": room_id},
-                    {
-                        "$set": {"max_message_id": message_id},
-                        "$push": {
-                            "messages": {
-                                "message_id": message_id,
-                                "user_id": user_id,
-                                "content": content,
-                                "timestamp": datetime.now(UTC).isoformat()
-                            }
-                        }
-                    },
-                    return_document=True
-                )
+                new_message["username"] = user_cache[new_message["user_id"]]
+                await websocket.send_json({"type": "latest_message", "message": new_message})
 
-        await gather(send_new_message(), listen_for_messages())
-
-    except WebSocketDisconnect:
-        await DB.users.update_one(
-            {"user_id": user_id, "rooms.room_id": room_id},
-            {"$set": {"rooms.$.last_read_id": message_id}}
-        )
+    await gather(listener(), send_latest())
 
 
 #      ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -928,3 +934,95 @@ async def pull_user_from_room(user_id: str, room_id: str, room: dict[str, Any]) 
         {"user_id": user_id},
         {"$pull": {"rooms": {"room_id": room_id}}}
     )
+
+
+async def store_message(room_id: str, user_id: str, content: str) -> int:
+    """
+    Store a message in the room collection, and return the new message id.
+
+    :param room_id: The room ID of the room.
+    :param user_id: The user ID of the user.
+    :param content: The content of the message.
+    """
+    try:
+        # Get the new max message id
+        room_data: dict[str, Any] = await DB.room.find_one({"room_id": room_id}, {"max_message_id": 1})
+        message_id: int = room_data["max_message_id"]
+
+        # Store the message
+        await DB.room.update_one(
+            {"room_id": room_id},
+            {
+                "$set": {"max_message_id": message_id + 1},
+                "$push": {
+                    "messages": {
+                        "message_id": message_id,
+                        "user_id": user_id,
+                        "content": content,
+                        "timestamp": datetime.now(UTC).isoformat()
+                    }
+                }
+            }
+        )
+
+        return message_id + 1
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def get_messages(room_id: str, from_id: int, to_id: int) -> list[dict[str, Any]]:
+    """
+    Get messages from the room collection.
+
+    :param room_id: The room ID of the room.
+    :param from_id: The message ID to start from.
+    :param to_id: The message ID to end at.
+    :return: A list of messages.
+    """
+    try:
+        messages: list[dict[str, Any]] = await DB.room.aggregate([
+            {"$match": {"room_id": room_id}},
+            {"$unwind": "$messages"},
+            {"$match": {"messages.message_id": {"$gte": from_id, "$lte": to_id}}},
+            {"$replaceRoot": {"newRoot": "$messages"}}
+        ]).to_list(None)
+        return messages
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def get_latest_read_id(user_id: str, room_id: str) -> int:
+    """
+    Get the last read message id of the user in the room.
+
+    :param user_id: The user ID of the user.
+    :param room_id: The room ID of the room.
+    :return: The last read message id.
+    """
+    try:
+        # Get user
+        user: dict[str, Any] = await get_user(user_id=user_id)
+
+        for room in user["rooms"]:
+            if room["room_id"] == room_id:
+                return room["last_read_id"]
+        return 1
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
+
+
+async def update_last_read_id(user_id: str, room_id: str, message_id: int) -> None:
+    """
+    Update the last read message id of the user in the room.
+
+    :param user_id: The user ID of the user.
+    :param room_id: The room ID of the room.
+    :param message_id: The last read message id.
+    """
+    try:
+        await DB.users.update_one(
+            {"user_id": user_id, "rooms.room_id": room_id},
+            {"$set": {"rooms.$.last_read_id": message_id}}
+        )
+    except OperationFailure as e:
+        raise RuntimeError(str(e))
