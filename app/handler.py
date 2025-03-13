@@ -6,14 +6,13 @@ from secrets import choice, token_urlsafe
 from typing import Any
 from uuid import uuid4
 
-from annotated_types.test_cases import cases
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from dotenv import load_dotenv
 from jwt import encode, decode, ExpiredSignatureError, InvalidTokenError
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorClient
 from pymongo.errors import OperationFailure
-from starlette.websockets import WebSocket, WebSocketDisconnect
+from starlette.websockets import WebSocket
 
 from email_sender import send_verification_email
 
