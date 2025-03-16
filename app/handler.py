@@ -676,9 +676,9 @@ async def chatroom(websocket: WebSocket, user_id: str, room_id: str) -> None:
     Handle the chatroom websocket connection, send and receive messages.
 
     Servers sends:
-        - initial_state: The initial state of the room. {type: "initial_state", last_read_id: 1, messages: [{"message_id": 1, "user_id": "user_id", "username": "username", "content": "content", "timestamp": "timestamp"}]}
-        - fetch_response: The response to a fetch request. {type: "fetch_response", messages: [{"message_id": 1, "user_id": "user_id", "username": "username", "content": "content", "timestamp": "timestamp"}]}
-        - latest_message: The latest message in the room. {type: "latest_message", message: {"message_id": 1, "user_id": "user_id", "username": "username", "content": "content", "timestamp": "timestamp"}}
+        - initial_state: The initial state of the room. {type: "initial_state", last_read_id: 1, messages: [{"message_id": 1, "user_id": "user_id", "username": "username", "email": "email", "content": "content", "timestamp": "timestamp"}]}
+        - fetch_response: The response to a fetch request. {type: "fetch_response", messages: [{"message_id": 1, "user_id": "user_id", "username": "username", "email": "email", "content": "content", "timestamp": "timestamp"}]}
+        - latest_message: The latest message in the room. {type: "latest_message", message: {"message_id": 1, "user_id": "user_id", "username": "username", "email": "email", "content": "content", "timestamp": "timestamp"}}
 
     Servers listens:
         - fetch: Fetch messages from the room. {type: "fetch", from_id: 1, to_id: 10}
@@ -710,9 +710,9 @@ async def chatroom(websocket: WebSocket, user_id: str, room_id: str) -> None:
     # Flag for listen_latest
     listen_latest: bool = False
 
-    # Sends initial state, last read id and messages from -20 to +30 of the last message
-    latest_read_id: int = room["last_read_id"]
-    initial_messages: list[dict[str, Any]] = await get_messages(room_id, latest_read_id - 20, latest_read_id + 30)
+    # Sends initial state, last read id and messages from -30 to +50 of the last message
+    latest_read_id: int = await get_latest_read_id(user_id, room_id)
+    initial_messages: list[dict[str, Any]] = await get_messages(room_id, latest_read_id - 30, latest_read_id + 50)
     await websocket.send_json({
         "type": "initial_state",
         "last_read_id": latest_read_id,
@@ -759,7 +759,7 @@ async def chatroom(websocket: WebSocket, user_id: str, room_id: str) -> None:
         """
         Send the latest messages to the client, if listen_latest is True.
         """
-        user_cache: dict[str, str] = {}
+        user_cache: dict[str, dict[str, str]] = {}
 
         pipeline: list[dict[str, Any]] = [
             {
@@ -784,9 +784,14 @@ async def chatroom(websocket: WebSocket, user_id: str, room_id: str) -> None:
                 # Get username from cache or fetch and cache it
                 if new_message["user_id"] not in user_cache:
                     user_details: dict[str, Any] = await get_user_details(new_message["user_id"])
-                    user_cache[new_message["user_id"]] = user_details["username"]
+                    user_cache[new_message["user_id"]] = {
+                        "username": user_details["username"],
+                        "email": user_details["email"]
+                    }
 
-                new_message["username"] = user_cache[new_message["user_id"]]
+                user_info = user_cache[new_message["user_id"]]
+                new_message["username"] = user_info["username"]
+                new_message["email"] = user_info["email"]
                 await websocket.send_json({"type": "latest_message", "message": new_message})
 
     await gather(listener(), send_latest())
@@ -955,7 +960,7 @@ async def store_message(room_id: str, user_id: str, content: str) -> int:
                 "$set": {"max_message_id": message_id + 1},
                 "$push": {
                     "messages": {
-                        "message_id": message_id,
+                        "message_id": message_id + 1,
                         "user_id": user_id,
                         "content": content,
                         "timestamp": datetime.now(UTC).isoformat()
@@ -983,7 +988,26 @@ async def get_messages(room_id: str, from_id: int, to_id: int) -> list[dict[str,
             {"$match": {"room_id": room_id}},
             {"$unwind": "$messages"},
             {"$match": {"messages.message_id": {"$gte": from_id, "$lte": to_id}}},
-            {"$replaceRoot": {"newRoot": "$messages"}}
+            {
+                "$lookup": {
+                    "from": "users",
+                    "localField": "messages.user_id",
+                    "foreignField": "user_id",
+                    "as": "user_info"
+                }
+            },
+            {"$unwind": "$user_info"},
+            {
+                "$project": {
+                    "_id": 0,
+                    "message_id": "$messages.message_id",
+                    "user_id": "$messages.user_id",
+                    "content": "$messages.content",
+                    "timestamp": "$messages.timestamp",
+                    "username": "$user_info.username",
+                    "email": "$user_info.email"
+                }
+            }
         ]).to_list(None)
         return messages
     except OperationFailure as e:

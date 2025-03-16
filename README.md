@@ -144,6 +144,7 @@ The server sends the initial state of the room, including the last read message 
             "message_id": 1,
             "user_id": "user_id",
             "username": "username",
+            "email": "email",
             "content": "content",
             "timestamp": "timestamp"
         }
@@ -172,6 +173,7 @@ The server responds with the requested messages.
             "message_id": 1,
             "user_id": "user_id",
             "username": "username",
+            "email": "email",
             "content": "content",
             "timestamp": "timestamp"
         }
@@ -207,6 +209,7 @@ The server will start sending latest messages to the client.
         "message_id": 1,
         "user_id": "user_id",
         "username": "username",
+        "email": "email",
         "content": "content",
         "timestamp": "timestamp"
     }
@@ -225,10 +228,10 @@ The client sends a new message to the server.
 
 ### WebSocket Chatroom Recommended Flow
 1. Server sends initial state:  
-   - The server sends the initial state of the room, including the last read message ID and a range of messages (-20 to +30).
+   - The server sends the initial state of the room, including the last read message ID and a range of messages (-30 to +50).
 
 2. Client checks initial state:  
-   - The client checks if the initial state max message ID is >= 30. If not, the user starts listening for the latest messages.
+   - The client checks if the initial state max message ID is >= 50. If not, the user starts listening for the latest messages.
 
 3. Client sends fetch request:  
    - The client sends a fetch request based on the last read ID and their own pagination mechanism. If the response is empty or less than the fetch to_id, the client starts listening for the latest messages.
@@ -241,7 +244,7 @@ The client sends a new message to the server.
    - The server will automatically update the latest message ID for the user.
 
 6. Client listens for latest messages:
-   - The client listens for the latest messages if the initial state max message ID is < 30 and the fetch response is empty or less than the fetch to_id.
+   - The client listens for the latest messages if the initial state max message ID is < 50 and the fetch response is empty or less than the fetch to_id.
 
 > **Note:** Make sure to properly close the WebSocket connection and handle websocket errors.
 
